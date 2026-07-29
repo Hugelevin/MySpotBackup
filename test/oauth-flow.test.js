@@ -84,7 +84,7 @@ test('the static callback exchanges a one-time code and stores the access token'
         storage,
     });
 
-    assert.equal(returnUrl, PAGE_URL);
+    assert.equal(returnUrl, `${PAGE_URL}?authenticated=1`);
     assert.equal(tokenRequest.url, 'https://accounts.spotify.com/api/token');
     assert.equal(tokenRequest.body.get('grant_type'), 'authorization_code');
     assert.equal(tokenRequest.body.get('code'), 'spotify-code');
