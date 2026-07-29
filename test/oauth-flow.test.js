@@ -1,117 +1,138 @@
 const assert = require('node:assert/strict');
 const { readFileSync } = require('node:fs');
 const { join } = require('node:path');
+const { webcrypto } = require('node:crypto');
 const test = require('node:test');
 
+const { createApp } = require('../index');
 const {
-    createApp,
-    generateCodeChallenge,
-    normalizeConfig,
-} = require('../index');
+    TOKEN_KEY,
+    callbackUrl,
+    completeAuthorization,
+    createAuthorizationRequest,
+    getAccessToken,
+    validateClientId,
+} = require('../public/oauth');
 
-const config = {
-    port: 8080,
-    callback_uri: 'http://127.0.0.1:8080/callback',
-    client_id: 'test-client-id',
-};
+const CLIENT_ID = '0123456789abcdef0123456789abcdef';
+const PAGE_URL = 'https://hugelevin.github.io/MySpotBackup/';
 
-async function startApp(options) {
-    const app = createApp(config, options);
-    const server = await new Promise((resolve) => {
-        const listeningServer = app.listen(0, '127.0.0.1', () => resolve(listeningServer));
-    });
-    const address = server.address();
-    return {
-        origin: `http://127.0.0.1:${address.port}`,
-        close: () => new Promise((resolve, reject) => {
-            server.close((error) => error ? reject(error) : resolve());
-        }),
-    };
+class MemoryStorage {
+    constructor() {
+        this.values = new Map();
+    }
+
+    getItem(key) {
+        return this.values.has(key) ? this.values.get(key) : null;
+    }
+
+    removeItem(key) {
+        this.values.delete(key);
+    }
+
+    setItem(key, value) {
+        this.values.set(key, String(value));
+    }
 }
 
-test('login sends Spotify an Authorization Code with PKCE request', async (t) => {
-    const server = await startApp();
-    t.after(server.close);
+async function makeAuthorization(storage, now = () => 1000) {
+    const url = await createAuthorizationRequest({
+        clientId: CLIENT_ID,
+        cryptoImpl: webcrypto,
+        now,
+        pageUrl: PAGE_URL,
+        storage,
+    });
+    return new URL(url);
+}
 
-    const response = await fetch(`${server.origin}/login`, { redirect: 'manual' });
-    assert.equal(response.status, 302);
+test('GitHub Pages login sends Spotify response_type=code with PKCE', async () => {
+    const authorizationUrl = await makeAuthorization(new MemoryStorage());
 
-    const authorizationUrl = new URL(response.headers.get('location'));
     assert.equal(authorizationUrl.origin, 'https://accounts.spotify.com');
     assert.equal(authorizationUrl.pathname, '/authorize');
     assert.equal(authorizationUrl.searchParams.get('response_type'), 'code');
-    assert.equal(authorizationUrl.searchParams.get('client_id'), config.client_id);
-    assert.equal(authorizationUrl.searchParams.get('redirect_uri'), config.callback_uri);
+    assert.equal(authorizationUrl.searchParams.get('client_id'), CLIENT_ID);
+    assert.equal(
+        authorizationUrl.searchParams.get('redirect_uri'),
+        'https://hugelevin.github.io/MySpotBackup/callback.html',
+    );
     assert.equal(authorizationUrl.searchParams.get('code_challenge_method'), 'S256');
-    assert.match(authorizationUrl.searchParams.get('state'), /^[A-Za-z0-9_-]{32}$/);
+    assert.match(authorizationUrl.searchParams.get('state'), /^[A-Za-z0-9._~-]{32}$/);
     assert.match(authorizationUrl.searchParams.get('code_challenge'), /^[A-Za-z0-9_-]{43}$/);
 });
 
-test('each login has independent one-time state and PKCE verification', async (t) => {
-    const tokenRequests = [];
-    const fetchImpl = async (url, options) => {
-        tokenRequests.push({ url, body: new URLSearchParams(options.body) });
-        return {
-            ok: true,
-            status: 200,
-            json: async () => ({ access_token: 'test-access-token' }),
-        };
-    };
-    const server = await startApp({ fetchImpl });
-    t.after(server.close);
+test('the static callback exchanges a one-time code and stores the access token', async () => {
+    const storage = new MemoryStorage();
+    const sessionStorage = new MemoryStorage();
+    const authorizationUrl = await makeAuthorization(storage);
+    const state = authorizationUrl.searchParams.get('state');
+    let tokenRequest;
 
-    const firstLogin = new URL((await fetch(`${server.origin}/login`, {
-        redirect: 'manual',
-    })).headers.get('location'));
-    const secondLogin = new URL((await fetch(`${server.origin}/login`, {
-        redirect: 'manual',
-    })).headers.get('location'));
+    const returnUrl = await completeAuthorization({
+        fetchImpl: async (url, options) => {
+            tokenRequest = { url, body: new URLSearchParams(options.body) };
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({ access_token: 'access-token', expires_in: 3600 }),
+            };
+        },
+        now: () => 2000,
+        pageUrl: `${callbackUrl(PAGE_URL)}?code=spotify-code&state=${state}`,
+        sessionStorage,
+        storage,
+    });
 
-    assert.notEqual(
-        firstLogin.searchParams.get('state'),
-        secondLogin.searchParams.get('state'),
-    );
-    assert.notEqual(
-        firstLogin.searchParams.get('code_challenge'),
-        secondLogin.searchParams.get('code_challenge'),
-    );
+    assert.equal(returnUrl, PAGE_URL);
+    assert.equal(tokenRequest.url, 'https://accounts.spotify.com/api/token');
+    assert.equal(tokenRequest.body.get('grant_type'), 'authorization_code');
+    assert.equal(tokenRequest.body.get('code'), 'spotify-code');
+    assert.equal(tokenRequest.body.get('client_id'), CLIENT_ID);
+    assert.equal(tokenRequest.body.get('redirect_uri'), callbackUrl(PAGE_URL));
+    assert.ok(tokenRequest.body.get('code_verifier'));
+    assert.equal(getAccessToken(sessionStorage, () => 2000), 'access-token');
+    assert.ok(sessionStorage.getItem(TOKEN_KEY));
 
-    const callback = await fetch(
-        `${server.origin}/callback?code=test-code&state=${firstLogin.searchParams.get('state')}`,
-    );
-    assert.equal(callback.status, 200);
-    assert.equal(tokenRequests.length, 1);
-    assert.equal(tokenRequests[0].body.get('grant_type'), 'authorization_code');
-    assert.equal(tokenRequests[0].body.get('code'), 'test-code');
-    assert.equal(tokenRequests[0].body.get('redirect_uri'), config.callback_uri);
-    assert.equal(
-        generateCodeChallenge(tokenRequests[0].body.get('code_verifier')),
-        firstLogin.searchParams.get('code_challenge'),
-    );
-
-    const replay = await fetch(
-        `${server.origin}/callback?code=replayed&state=${firstLogin.searchParams.get('state')}`,
-    );
-    assert.equal(replay.status, 400);
-    assert.equal(tokenRequests.length, 1);
-});
-
-test('invalid config explains Spotify redirect URI requirements', () => {
-    assert.throws(
-        () => normalizeConfig({ ...config, callback_uri: 'http://localhost:8080/callback' }),
-        /does not allow localhost/,
-    );
-    assert.throws(
-        () => normalizeConfig({ ...config, client_id: 'yourclientid' }),
-        /Set client_id/,
+    await assert.rejects(
+        () => completeAuthorization({
+            fetchImpl: async () => assert.fail('A replay must not request a token'),
+            now: () => 2001,
+            pageUrl: `${callbackUrl(PAGE_URL)}?code=replay&state=${state}`,
+            sessionStorage,
+            storage,
+        }),
+        /missing or invalid/,
     );
 });
 
-test('the config template declares its binding and can be loaded by Node', () => {
+test('client IDs are validated without requiring a client secret', () => {
+    assert.equal(validateClientId(CLIENT_ID), CLIENT_ID);
+    assert.throws(() => validateClientId(''), /Client ID/);
+    assert.throws(() => validateClientId('client secret with spaces'), /Client ID/);
+});
+
+test('the config template declares its browser binding', () => {
     const template = readFileSync(
         join(__dirname, '..', 'public', 'config.example.js'),
         'utf8',
     );
     assert.match(template, /^const config = /);
-    assert.doesNotMatch(template, /^config = /);
+    assert.doesNotMatch(template, /client_secret/);
+});
+
+test('the local server serves the same static app and callback', async (t) => {
+    const server = await new Promise((resolve) => {
+        const running = createApp().listen(0, '127.0.0.1', () => resolve(running));
+    });
+    t.after(() => new Promise((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+    }));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+
+    const home = await fetch(`${origin}/`);
+    const callbackResponse = await fetch(`${origin}/callback.html`);
+    assert.equal(home.status, 200);
+    assert.equal(callbackResponse.status, 200);
+    assert.match(await callbackResponse.text(), /Connecting Spotify/);
 });

@@ -1,57 +1,46 @@
 # MySpotBackup
 
-MySpotBackup exports and restores Spotify playlists and saved library items. It is
-a maintained continuation of the discontinued
+MySpotBackup exports and restores Spotify playlists and saved library items. It
+is a maintained continuation of the discontinued
 [SpotMyBackup](https://github.com/secuvera/SpotMyBackup).
 
-The app runs locally and uses Spotify's Authorization Code with PKCE flow. It
-does not need a Spotify client secret. Authorization codes and access tokens are
-handled only by the local Node.js process and browser session.
+The app is hosted on GitHub Pages and uses Spotify's browser-safe Authorization
+Code with PKCE flow. It does not need a server or Spotify Client Secret.
 
-## Requirements
+## Use the hosted app
 
-- Node.js 18 or newer
-- A Spotify developer app
-- Spotify Premium on the developer app owner's account (required by Spotify for
-  Development Mode apps)
+Open <https://hugelevin.github.io/MySpotBackup/>.
 
-## Set up Spotify
+Before the first login, create a Spotify developer app:
 
-1. Open the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/)
-   and create an app.
-2. In the app settings, set:
-   - Website: `http://127.0.0.1:8080`
-   - Redirect URI: `http://127.0.0.1:8080/callback`
-3. Add every Spotify account that will use the tool under User Management.
-4. Copy the app's Client ID. A client secret is not needed.
+1. Open the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/).
+2. Select **Create app**.
+3. Enter any name and description, select **Web API**, accept the terms, and
+   create the app.
+4. In **Settings**, add:
+   - Website: `https://hugelevin.github.io/MySpotBackup/`
+   - Redirect URI:
+     `https://hugelevin.github.io/MySpotBackup/callback.html`
+5. Under **User Management**, add every Spotify account that will use the tool.
+6. Copy the **Client ID** shown in the app settings. Do not copy or share the
+   Client Secret.
+7. Return to MySpotBackup, paste the Client ID into **Spotify Client ID**, and
+   select **Save**.
+8. Select **Login with Spotify**.
 
-The redirect URI must match exactly. Spotify does not allow `localhost`; use the
-literal loopback address `127.0.0.1`.
+The Client ID is public application metadata. MySpotBackup stores it locally in
+your browser. The temporary access token is kept only in that browser tab's
+session storage.
 
-## Install and run
-
-```powershell
-git clone https://github.com/Hugelevin/MySpotBackup.git
-cd MySpotBackup
-npm install
-Copy-Item public/config.example.js public/config.js
-```
-
-Open `public/config.js`, replace `yourclientid` with the Spotify Client ID, and
-then run:
-
-```powershell
-npm start
-```
-
-Open <http://127.0.0.1:8080>, select **Login with Spotify**, and approve access.
+Spotify requires the redirect URI to match exactly, including capitalization,
+path, and trailing characters.
 
 ## Back up and restore
 
 1. Log in to the source Spotify account.
 2. Select **Export** and save the JSON backup.
 3. Open MySpotBackup in a private/incognito window.
-4. Log in to the destination Spotify account.
+4. Set the same Client ID and log in to the destination Spotify account.
 5. Select **Import** and choose the JSON backup.
 
 Spotify's Development Mode API does not expose the contents of playlists that
@@ -59,41 +48,57 @@ the user does not own or collaborate on. MySpotBackup preserves those playlists
 by following them on restore, but it cannot copy their individual tracks.
 Local-file tracks and original "date added" metadata also cannot be restored.
 
+## Run locally
+
+Add this second Redirect URI to the same Spotify app:
+
+`http://127.0.0.1:8080/callback.html`
+
+Then run:
+
+```powershell
+git clone https://github.com/Hugelevin/MySpotBackup.git
+cd MySpotBackup
+npm install
+npm start
+```
+
+Open <http://127.0.0.1:8080> and set the Client ID in the page. Spotify does not
+allow `localhost`; use the literal loopback address `127.0.0.1`.
+
 ## Troubleshooting
 
 ### `response_type must be code`
 
-This version always starts authentication through its local `/login` route,
-which sends Spotify `response_type=code` with PKCE. Make sure:
+This version always sends `response_type=code` with an S256 PKCE challenge.
+Confirm that you are using the hosted URL above, then clear the saved Client ID
+by saving the Client ID from the correct Spotify app again.
 
-- you opened `http://127.0.0.1:8080`, not an older hosted copy;
-- the Spotify dashboard Redirect URI is exactly
-  `http://127.0.0.1:8080/callback`;
-- `public/config.js` has the same callback URI; and
-- you restarted `npm start` after changing the config.
+### `INVALID_CLIENT` or invalid Client ID
 
-Run `npm test` to verify the complete local OAuth redirect and callback contract.
+Use the Client ID from **Spotify Developer Dashboard → your app → Settings**.
+The Client Secret is a different value and must not be entered.
 
-### Missing `public/config.js`
+### Invalid redirect URI
 
-Copy `public/config.example.js` to `public/config.js` and add your Client ID.
-The real config is ignored by Git so it will not be committed accidentally.
+The Spotify dashboard entry must be exactly:
+
+`https://hugelevin.github.io/MySpotBackup/callback.html`
 
 ### Spotify returns `403`
 
-Confirm the account is listed in the app's User Management and that the
-developer app owner still has Spotify Premium.
+Confirm the Spotify account is listed under the app's User Management and that
+the developer app owner has Spotify Premium.
 
-## Development
+## Development and deployment
 
 ```powershell
 npm test
 npm audit --omit=dev
 ```
 
-The tests cover the OAuth `response_type=code` redirect, PKCE verifier pairing,
-one-time state validation, redirect URI rules, and Spotify's current generic
-library endpoints.
+Pushes to `main` run the test suite and deploy the `public` directory through
+GitHub Actions and GitHub Pages.
 
 ## License
 

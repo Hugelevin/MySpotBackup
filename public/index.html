@@ -7,6 +7,7 @@
     <title>MySpotBackup</title>
     <link rel="stylesheet" href="style.css">
     <script src="config.js"></script>
+    <script src="oauth.js"></script>
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.13.6/underscore-min.js"></script>
 </head>
@@ -43,6 +44,15 @@
                 <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 14.36c-.2.3-.56.4-.86.2-2.36-1.44-5.33-1.77-8.83-.97-.34.08-.67-.14-.75-.47-.08-.34.13-.67.47-.75 3.83-.87 7.12-.5 9.77 1.13.3.18.4.56.2.86zm1.22-2.72c-.24.38-.76.5-1.14.24-2.7-1.66-6.82-2.14-10.02-1.17-.42.12-.86-.1-.98-.52-.12-.42.1-.86.52-.98 3.65-1.1 8.18-.57 11.3 1.33.38.24.5.76.32 1.1zm.1-2.83c-3.24-1.93-8.58-2.1-11.68-1.16-.5.15-1.02-.13-1.17-.62-.15-.5.13-1.02.62-1.17 3.55-1.08 9.46-.87 13.2 1.34.46.27.6.86.34 1.32-.27.44-.86.6-1.31.29z"/></svg>
                 Login with Spotify
             </button>
+            <div class="client-id-tools">
+                <label for="spotifyClientId">Spotify Client ID</label>
+                <div class="client-id-row">
+                    <input id="spotifyClientId" type="text" autocomplete="off" spellcheck="false"
+                           placeholder="Paste Client ID">
+                    <button id="saveClientId" class="btn btn-secondary" type="button">Save</button>
+                </div>
+                <span id="clientIdStatus"></span>
+            </div>
         </div>
 
         <!-- Account / Loading Panel -->
@@ -146,7 +156,6 @@
 <script>
 
     var conf = config;
-    var authWindow = null;
     var token = null;
     var userId = '';
     var collections = {};
@@ -240,25 +249,48 @@
         setTimeout(refreshProgress, 1000);
     }
 
-    function login() {
-        var width = 480, height = 640;
-        var left = (screen.width / 2) - (width / 2);
-        var top = (screen.height / 2) - (height / 2);
-        var loginUrl = new URL('/login', window.location.origin);
-        authWindow = window.open(
-            loginUrl.toString(), "Spotify",
-            'menubar=no,location=no,resizable=no,scrollbars=no,status=no, width=' + width + ', height=' + height + ', top=' + top + ', left=' + left
-        );
+    function currentClientId() {
+        return (conf.client_id || localStorage.getItem(MySpotOAuth.CLIENT_ID_KEY) || '').trim();
     }
 
-    function authCallback(event) {
-        if (event.origin !== window.location.origin || event.source !== authWindow) {
-            console.warn("Ignoring an unexpected authentication message.");
-            return;
+    function updateClientIdStatus() {
+        $('#clientIdStatus').text(currentClientId() ? 'Client ID saved in this browser' : 'Client ID required');
+    }
+
+    function saveClientId() {
+        var entered = $('#spotifyClientId').val().trim();
+        if (!entered) {
+            alert('Paste the Client ID from your Spotify Developer Dashboard.');
+            return null;
         }
-        if (event.data && event.data.type === 'myspotbackup-auth' && event.data.token) {
-            if (authWindow) authWindow.close();
-            handleAuth(event.data.token);
+        try {
+            var clientId = MySpotOAuth.validateClientId(entered);
+            localStorage.setItem(MySpotOAuth.CLIENT_ID_KEY, clientId);
+            $('#spotifyClientId').val('');
+            updateClientIdStatus();
+            return clientId;
+        } catch (error) {
+            alert(error.message);
+            return null;
+        }
+    }
+
+    async function login() {
+        try {
+            var clientId = currentClientId();
+            if (!clientId) {
+                alert('Paste and save your Spotify Client ID before logging in.');
+                $('#spotifyClientId').focus();
+                return;
+            }
+            var authorizationUrl = await MySpotOAuth.createAuthorizationRequest({
+                clientId: clientId,
+                pageUrl: window.location.href,
+                storage: window.localStorage
+            });
+            window.location.assign(authorizationUrl);
+        } catch (error) {
+            alert('Could not start Spotify login: ' + error.message);
         }
     }
 
@@ -1033,9 +1065,12 @@
 
     window.onload = function () {
         $('#login').click(login);
-        window.addEventListener("message", authCallback, false);
+        $('#saveClientId').click(saveClientId);
         bindControls();
         refreshProgress();
+        updateClientIdStatus();
+        var savedAccessToken = MySpotOAuth.getAccessToken(window.sessionStorage);
+        if (savedAccessToken) handleAuth(savedAccessToken);
     }
 
 </script>
