@@ -12,6 +12,37 @@ test('Spotify totals preserve the difference between missing and zero', () => {
     assert.equal(BackupTools.reportedSpotifyTotal('12'), 12);
 });
 
+test('supplemental library loads require an exact Spotify total and no skipped items', () => {
+    assert.equal(
+        BackupTools.assessSupplementalLibraryLoad(
+            {expectedTotal: 2, receivedItems: 2, skipped: 0, error: null},
+            'Saved albums',
+        ).complete,
+        true,
+    );
+    assert.match(
+        BackupTools.assessSupplementalLibraryLoad(
+            {expectedTotal: 3, receivedItems: 2, skipped: 0, error: null},
+            'Saved albums',
+        ).message,
+        /only 2 of 3/,
+    );
+    assert.equal(
+        BackupTools.assessSupplementalLibraryLoad(
+            {expectedTotal: null, receivedItems: 0, skipped: 0, error: null},
+            'Followed artists',
+        ).complete,
+        false,
+    );
+    assert.equal(
+        BackupTools.assessSupplementalLibraryLoad(
+            {expectedTotal: 1, receivedItems: 1, skipped: 1, error: null},
+            'Saved shows',
+        ).complete,
+        false,
+    );
+});
+
 test('a liked song backup preserves its Spotify ID, URI, and date liked', () => {
     assert.deepEqual(
         BackupTools.savedTrackFromSpotify({
@@ -379,6 +410,8 @@ test('Liked Songs verification checks every unique restorable track in API-sized
 
 test('temporary Spotify failures are retried but permanent failures are not', () => {
     assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 0), true);
+    assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 7), true);
+    assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 8), false);
     assert.equal(BackupTools.shouldRetrySpotifyStatus(503, 2), true);
     assert.equal(BackupTools.shouldRetrySpotifyStatus(503, 3), false);
     assert.equal(BackupTools.shouldRetrySpotifyStatus(403, 0), false);
@@ -386,7 +419,8 @@ test('temporary Spotify failures are retried but permanent failures are not', ()
 
 test('non-idempotent playlist writes retry rate limits but not ambiguous server errors', () => {
     assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 0), true);
-    assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 3), false);
+    assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 7), true);
+    assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 8), false);
     assert.equal(BackupTools.shouldRetrySpotifyPostStatus(503, 0), false);
 });
 

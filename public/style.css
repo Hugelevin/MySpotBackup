@@ -340,8 +340,14 @@ body {
   animation: none;
 }
 
-#btnRetryLoad {
+.recovery-actions {
   margin-top: 12px;
+  display: flex;
+  gap: 10px;
+}
+
+.recovery-actions .btn {
+  flex: 1;
 }
 
 /* Action Buttons */
@@ -464,6 +470,8 @@ body {
 
 .import-target strong { font-size: 16px; }
 .import-target small { color: var(--text-secondary); line-height: 1.4; }
+
+.import-target small.status-error { color: #ffb3b3; }
 
 .button-row,
 .completion-actions {
