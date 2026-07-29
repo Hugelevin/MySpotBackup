@@ -192,6 +192,18 @@ body {
   font-size: 12px;
 }
 
+.auth-error {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border: 1px solid rgba(255, 107, 107, 0.35);
+  border-radius: 10px;
+  background: rgba(255, 107, 107, 0.1);
+  color: #ffb3b3;
+  font-size: 13px;
+  line-height: 1.5;
+  text-align: left;
+}
+
 .oauth-result {
   margin-top: 80px;
   text-align: center;

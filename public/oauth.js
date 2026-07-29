@@ -135,7 +135,9 @@
             expiresAt: now() + (Number(body.expires_in || 3600) * 1000),
         }));
         options.storage.setItem(CLIENT_ID_KEY, pending.clientId);
-        return appUrl(options.pageUrl);
+        const returnUrl = new URL(appUrl(options.pageUrl));
+        returnUrl.searchParams.set('authenticated', '1');
+        return returnUrl.toString();
     }
 
     function getAccessToken(sessionStorage, now = Date.now) {

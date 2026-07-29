@@ -53,6 +53,7 @@
                 </div>
                 <span id="clientIdStatus"></span>
             </div>
+            <div id="authError" class="auth-error hidden" role="alert"></div>
         </div>
 
         <!-- Account / Loading Panel -->
@@ -255,6 +256,39 @@
 
     function updateClientIdStatus() {
         $('#clientIdStatus').text(currentClientId() ? 'Client ID saved in this browser' : 'Client ID required');
+    }
+
+    function showAuthMessage(message) {
+        $('#authError').text(message).removeClass('hidden');
+        $('#pnlLoggedOut').removeClass('hidden');
+        $('#pnlLoadingAccount').addClass('hidden');
+    }
+
+    function showAuthError(jqXHR) {
+        var status = jqXHR && jqXHR.status ? jqXHR.status : 0;
+        var response = jqXHR && jqXHR.responseJSON ? jqXHR.responseJSON : {};
+        var spotifyError = response.error || {};
+        var spotifyMessage = typeof spotifyError === 'string'
+            ? spotifyError
+            : (spotifyError.message || response.error_description || '');
+        var message;
+
+        if (status === 403) {
+            message = 'Spotify authorized the login but denied Web API access (403). '
+                + 'In the Spotify Developer Dashboard, open this app → Settings → User Management '
+                + 'and add the exact Spotify account you just logged in with. The app owner must have Premium.';
+        } else if (status === 401) {
+            window.sessionStorage.removeItem(MySpotOAuth.TOKEN_KEY);
+            message = 'The Spotify login token is invalid or expired (401). Select Login with Spotify and try again.';
+        } else if (status === 429) {
+            message = 'Spotify temporarily refused the request because the app quota or rate limit was reached (429). Try again later.';
+        } else if (status === 0) {
+            message = 'The browser could not reach Spotify Web API. Check your connection or privacy extensions, then try again.';
+        } else {
+            message = 'Spotify Web API returned an error' + (status ? ' (' + status + ')' : '') + '.';
+        }
+        if (spotifyMessage) message += ' Spotify says: ' + spotifyMessage;
+        showAuthMessage(message);
     }
 
     function saveClientId() {
@@ -831,19 +865,27 @@
 
     function handleAuth(accessToken) {
         token = accessToken;
+        $('#authError').addClass('hidden').text('');
         $.ajax({
             url: 'https://api.spotify.com/v1/me',
             headers: {'Authorization': 'Bearer ' + accessToken},
             success: function (response) {
-                var user_id = response.id.toLowerCase();
-                userId = user_id;
-                name = user_id;
+                var user_id = String(response.id || response.account_id || '').toLowerCase();
+                if (!user_id) {
+                    showAuthMessage('Spotify returned a profile without a usable account ID. Please log in again.');
+                    return;
+                }
+                userId = String(response.id || response.account_id);
+                name = response.display_name || user_id;
                 $('#userName').html(name);
                 $('#avatarLetter').html(name.charAt(0).toUpperCase());
                 $('#pnlLoggedOut').addClass('hidden');
                 refreshTrackData(function () {
                     $('#pnlAction').removeClass('hidden');
                 });
+            },
+            error: function (jqXHR) {
+                showAuthError(jqXHR);
             }
         });
     }
@@ -1070,7 +1112,14 @@
         refreshProgress();
         updateClientIdStatus();
         var savedAccessToken = MySpotOAuth.getAccessToken(window.sessionStorage);
-        if (savedAccessToken) handleAuth(savedAccessToken);
+        if (savedAccessToken) {
+            handleAuth(savedAccessToken);
+        } else if (new URLSearchParams(window.location.search).get('authenticated') === '1') {
+            showAuthMessage(
+                'Spotify returned to MySpotBackup, but the login token was not available in this tab. '
+                + 'Disable storage-blocking privacy settings for this site and try Login with Spotify again.'
+            );
+        }
     }
 
 </script>
