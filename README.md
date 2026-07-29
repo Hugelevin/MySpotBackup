@@ -1,57 +1,100 @@
 # MySpotBackup
-This is a working version of the discontinued and unfortunately no longer working [SpotMyBackup](https://github.com/secuvera/SpotMyBackup).
 
-> Backup and Restore your Spotify Playlists and "My Music".
-> 
-> This javascript based app allows you to backup all your playlists and import them in any other Spotify Account. It uses the OAuth-Functionality of Spotify to be able to handle your personal playlists.
-> 
-> In consequence, no credentials or data is stored or processed on the Webserver itself.
+MySpotBackup exports and restores Spotify playlists and saved library items. It is
+a maintained continuation of the discontinued
+[SpotMyBackup](https://github.com/secuvera/SpotMyBackup).
 
-This has been hacked together last night so there is a lot of room for improvement, but at least it's working again.
+The app runs locally and uses Spotify's Authorization Code with PKCE flow. It
+does not need a Spotify client secret. Authorization codes and access tokens are
+handled only by the local Node.js process and browser session.
 
-There was a small issue with the authentication process, which i fixed using an express server which was faster for me, for code improvement ideas see below.
+## Requirements
 
-## How to use:
-1) Clone/Download Repository
-2) Install Node.js
-3) Run ``npm install`` 
-4) Create an app at https://developer.spotify.com/dashboard/
-   - App name : e.g. Michaels SpotMyBackup
-   - App description : For backing up my account
-   -  Website : http://youripaddress:8080
-   -  Redirect URIs : http://youripaddress:8080/callback
-   - In the User Management, add your second (new/old) account as well
-     - Second user might need to login into dashboard one time as well to confirm terms and conditions
-4) Copy ``public/config.example.js`` to ``public/config.js`` and edit it to reflect the same settings and the right client id
-4) Run ``npm serve-express`` (equal to running ``node index.js``, see package.json)
-5) Click Login on old account
-6) Export File
-7) Open in incognito window
-8) Click login on new account
-9) Import File
-10) Done
+- Node.js 18 or newer
+- A Spotify developer app
+- Spotify Premium on the developer app owner's account (required by Spotify for
+  Development Mode apps)
 
-## Known Issues (probably already in the original):
-- When running this on my personal account, some of the playlists were not copied fully, some were empty on the target, but it was a good start.
-- Dates like the time a song was added to a playlist get lost
+## Set up Spotify
 
-## Contributing:
-Some ugly code here:
-- we could integrate the express server functionality into the main index.html again to reduce the dependency
-  - we could propose using simply http-server as dependency while still allowing other web servers
-- we could use typescript instead of js
-- we could properly separate html, css and js
-- we could host it online (github deploy actions etc.)
-- we could merge [open pull request](https://github.com/secuvera/SpotMyBackup/pulls) features and improvements from the original page
-- we could use different scopes (read/write) for the different actions (export only needs reed permission from spotify)
-- we could catch some common errors to provide help instead of crashing
+1. Open the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/)
+   and create an app.
+2. In the app settings, set:
+   - Website: `http://127.0.0.1:8080`
+   - Redirect URI: `http://127.0.0.1:8080/callback`
+3. Add every Spotify account that will use the tool under User Management.
+4. Copy the app's Client ID. A client secret is not needed.
 
-## FAQ
-- I get the error ``Error: Cannot find module './public/config'``: You forgot to create a copy of ``public/config.example.js`` (file name ``public/config.js``)
-- Can i use localhost instead of ``youripadress``?: Yes, just use any available hostname. Make sure to also use it inside the Spotify dashboard. The only thing not working should be file:// urls.
+The redirect URI must match exactly. Spotify does not allow `localhost`; use the
+literal loopback address `127.0.0.1`.
 
-## Helpful Links 
-- https://developer.spotify.com/documentation/web-api/tutorials/code-pkce-flow
-- https://developer.spotify.com/documentation/web-api/howtos/web-app-profile
-- https://github.com/spotify/web-api-examples/tree/master/get_user_profile
-- https://github.com/secuvera/SpotMyBackup/wiki
+## Install and run
+
+```powershell
+git clone https://github.com/Hugelevin/MySpotBackup.git
+cd MySpotBackup
+npm install
+Copy-Item public/config.example.js public/config.js
+```
+
+Open `public/config.js`, replace `yourclientid` with the Spotify Client ID, and
+then run:
+
+```powershell
+npm start
+```
+
+Open <http://127.0.0.1:8080>, select **Login with Spotify**, and approve access.
+
+## Back up and restore
+
+1. Log in to the source Spotify account.
+2. Select **Export** and save the JSON backup.
+3. Open MySpotBackup in a private/incognito window.
+4. Log in to the destination Spotify account.
+5. Select **Import** and choose the JSON backup.
+
+Spotify's Development Mode API does not expose the contents of playlists that
+the user does not own or collaborate on. MySpotBackup preserves those playlists
+by following them on restore, but it cannot copy their individual tracks.
+Local-file tracks and original "date added" metadata also cannot be restored.
+
+## Troubleshooting
+
+### `response_type must be code`
+
+This version always starts authentication through its local `/login` route,
+which sends Spotify `response_type=code` with PKCE. Make sure:
+
+- you opened `http://127.0.0.1:8080`, not an older hosted copy;
+- the Spotify dashboard Redirect URI is exactly
+  `http://127.0.0.1:8080/callback`;
+- `public/config.js` has the same callback URI; and
+- you restarted `npm start` after changing the config.
+
+Run `npm test` to verify the complete local OAuth redirect and callback contract.
+
+### Missing `public/config.js`
+
+Copy `public/config.example.js` to `public/config.js` and add your Client ID.
+The real config is ignored by Git so it will not be committed accidentally.
+
+### Spotify returns `403`
+
+Confirm the account is listed in the app's User Management and that the
+developer app owner still has Spotify Premium.
+
+## Development
+
+```powershell
+npm test
+npm audit --omit=dev
+```
+
+The tests cover the OAuth `response_type=code` redirect, PKCE verifier pairing,
+one-time state validation, redirect URI rules, and Spotify's current generic
+library endpoints.
+
+## License
+
+GPL-2.0. See [LICENSE.md](LICENSE.md).

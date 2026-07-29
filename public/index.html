@@ -244,18 +244,19 @@
         var width = 480, height = 640;
         var left = (screen.width / 2) - (width / 2);
         var top = (screen.height / 2) - (height / 2);
+        var loginUrl = new URL('/login', window.location.origin);
         authWindow = window.open(
-            conf.login_url, "Spotify",
+            loginUrl.toString(), "Spotify",
             'menubar=no,location=no,resizable=no,scrollbars=no,status=no, width=' + width + ', height=' + height + ', top=' + top + ', left=' + left
         );
     }
 
     function authCallback(event) {
-        if (event.origin !== conf.uri) {
-            console.log("config.uri misconfigured:", {uri: conf.uri, origin: event.origin});
+        if (event.origin !== window.location.origin || event.source !== authWindow) {
+            console.warn("Ignoring an unexpected authentication message.");
             return;
         }
-        if (event.data.token) {
+        if (event.data && event.data.type === 'myspotbackup-auth' && event.data.token) {
             if (authWindow) authWindow.close();
             handleAuth(event.data.token);
         }
@@ -277,15 +278,22 @@
     function readFile(evt) {
         var f = evt.target.files[0];
         if (f) {
-            $('#fileName').html(f.name);
+            $('#fileName').text(f.name);
             var r = new FileReader();
             r.onload = function (e) {
-                var json = e.target.result;
-                importColl = JSON.parse(json);
-                $('#pnlFile').addClass('hidden');
-                $('#pnlFileInfo').removeClass('hidden');
-                $('#pnlUpload').removeClass('hidden');
-                compareEverything();
+                try {
+                    importColl = JSON.parse(e.target.result);
+                    if (!importColl || typeof importColl !== 'object' || !importColl.playlists) {
+                        throw new Error('This is not a MySpotBackup file.');
+                    }
+                    $('#pnlFile').addClass('hidden');
+                    $('#pnlFileInfo').removeClass('hidden');
+                    $('#pnlUpload').removeClass('hidden');
+                    compareEverything();
+                } catch (error) {
+                    alert('Could not import this backup: ' + error.message);
+                    evt.target.value = '';
+                }
             }
             r.readAsText(f);
         } else {
@@ -323,6 +331,9 @@
             resetCounter();
             savedQueue = [];
             playlistQueue = [];
+            followQueue = [];
+            artistFollowQueue = [];
+            librarySaveQueues = { albums: [], shows: [], episodes: [], audiobooks: [] };
             globalStep = "Uploading";
             if (typeof importColl !== 'undefined') {
                 playlistTotal = collPlaylistCount(importColl);
@@ -434,36 +445,37 @@
                 });
             });
         } else {
-            globalStep = "No new tracks found in import";
+            globalStep = "No new items found in import";
+            isImporting = false;
+            makingChanges = false;
         }
     }
 
     function handleFollowRequests(arr, callback) {
-        var playlistId = arr.pop();
-        if (playlistId) {
-            playlistStep += 1;
-            var lastXHR = null;
-            console.log('Following playlist:', playlistId);
-            $.ajax({
-                method: "PUT",
-                url: 'https://api.spotify.com/v1/playlists/' + playlistId + '/followers',
-                contentType: 'application/json',
-                data: JSON.stringify({public: false}),
-                headers: {'Authorization': 'Bearer ' + token},
-                success: function () { console.log('Followed playlist:', playlistId); },
-                error: function (jqXHR) { lastXHR = jqXHR; console.warn('Failed to follow playlist ' + playlistId + ':', jqXHR.status); }
-            }).always(function () {
-                var delay = getRetryDelay(lastXHR);
-                setTimeout(function () { handleFollowRequests(arr, callback); }, delay);
-            });
-        } else { callback(); }
+        if (arr.length === 0) { callback(); return; }
+        var batch = arr.splice(0, 40);
+        var uris = batch.map(function (id) { return 'spotify:playlist:' + id; });
+        var urisParam = uris.map(function (uri) { return encodeURIComponent(uri); }).join(',');
+        var lastXHR = null;
+        console.log('Following ' + batch.length + ' playlists via library');
+        $.ajax({
+            method: "PUT",
+            url: 'https://api.spotify.com/v1/me/library?uris=' + urisParam,
+            headers: {'Authorization': 'Bearer ' + token},
+            success: function () { console.log('Followed playlist batch'); },
+            error: function (jqXHR) { lastXHR = jqXHR; console.warn('Failed to follow playlists:', jqXHR.status); }
+        }).always(function () {
+            playlistStep += batch.length;
+            var delay = getRetryDelay(lastXHR);
+            setTimeout(function () { handleFollowRequests(arr, callback); }, delay);
+        });
     }
 
     function handleArtistFollowRequests(arr, callback) {
-        // /me/following is deprecated — use /me/library with spotify:user:{id} URIs
+        // /me/following writes were replaced by /me/library in Spotify's 2026 API.
         if (arr.length === 0) { callback(); return; }
         var batch = arr.splice(0, 40);
-        var uris = batch.map(function (id) { return 'spotify:user:' + id; });
+        var uris = batch.map(function (id) { return 'spotify:artist:' + id; });
         var urisParam = uris.map(function (u) { return encodeURIComponent(u); }).join(',');
         var lastXHR = null;
         console.log('Following ' + batch.length + ' artists via library...');
@@ -521,7 +533,7 @@
                 };
                 callback(true);
             },
-            fail: function () { callback(false); }
+            error: function () { callback(false); }
         });
     }
 
@@ -720,8 +732,7 @@
     function wipeArtists(artists, callback) {
         if (!artists || artists.length === 0) { callback(); return; }
         var batch = artists.splice(0, 40);
-        // Use /me/library DELETE with spotify:user:{id} URIs (deprecated /me/following)
-        var uris = batch.map(function (a) { return 'spotify:user:' + a.id; });
+        var uris = batch.map(function (a) { return a.uri || ('spotify:artist:' + a.id); });
         var urisParam = uris.map(function (u) { return encodeURIComponent(u); }).join(',');
         trackStep += 1;
         var lastXHR = null;
@@ -769,14 +780,14 @@
         var pl = playlists.pop();
         if (!pl) { callback(); return; }
         trackStep += 1;
-        // For owned playlists: unfollow (which deletes). For followed: unfollow.
+        // Removing a playlist URI unfollows it; owned playlists are removed as well.
         var action = pl.owned ? 'Deleting' : 'Unfollowing';
         console.log(action + ' playlist:', pl.name);
         globalStep = action + ': ' + pl.name;
         var lastXHR = null;
         $.ajax({
             method: "DELETE",
-            url: 'https://api.spotify.com/v1/playlists/' + pl.id + '/followers',
+            url: 'https://api.spotify.com/v1/me/library?uris=' + encodeURIComponent('spotify:playlist:' + pl.id),
             headers: {'Authorization': 'Bearer ' + token},
             success: function () { console.log(action + ' playlist done:', pl.name); },
             error: function (jqXHR) { lastXHR = jqXHR; console.warn(action + ' playlist failed:', pl.name, jqXHR.status); }
@@ -788,7 +799,6 @@
 
     function handleAuth(accessToken) {
         token = accessToken;
-        console.log("fetching now with auth token", token);
         $.ajax({
             url: 'https://api.spotify.com/v1/me',
             headers: {'Authorization': 'Bearer ' + accessToken},

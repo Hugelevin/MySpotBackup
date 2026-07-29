@@ -4,10 +4,12 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
-    "serve-simple": "http-server ./public",
-    "serve-express": "node index.js"
+    "test": "node --test"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.22.2"
+  },
+  "engines": {
+    "node": ">=18"
   }
 }

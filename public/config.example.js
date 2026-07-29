@@ -1,8 +1,6 @@
-config = {
+const config = {
     "port": 8080,
-    "uri": "http://youripaddress:8080",
-    "login_url": "http://youripaddress:8080/login",
-    "callback_uri": "http://youripaddress:8080/callback",
+    "callback_uri": "http://127.0.0.1:8080/callback",
     "client_id": "yourclientid",
     "slowdown_import": 100,
     "slowdown_export": 100
