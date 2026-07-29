@@ -46,13 +46,21 @@
                 Login with Spotify
             </button>
             <div class="client-id-tools">
-                <label for="spotifyClientId">Spotify Client ID</label>
+                <div class="client-id-heading">
+                    <label for="spotifyClientId">Spotify Client ID <span>(not a secret)</span></label>
+                    <a href="https://developer.spotify.com/dashboard" target="_blank" rel="noopener">Open dashboard</a>
+                </div>
                 <div class="client-id-row">
                     <input id="spotifyClientId" type="text" autocomplete="off" spellcheck="false"
-                           placeholder="Paste Client ID">
+                           aria-describedby="clientIdHelp clientIdStatus"
+                           placeholder="Paste the Client ID from your Spotify app">
                     <button id="saveClientId" class="btn btn-secondary" type="button">Save</button>
                 </div>
-                <span id="clientIdStatus"></span>
+                <div id="clientIdHelp">Safe to use in this browser-only PKCE app. Never paste a Client Secret here.</div>
+                <div class="client-id-status-row">
+                    <span id="clientIdStatus" role="status"></span>
+                    <button id="forgetClientId" class="text-button hidden" type="button">Forget Client ID</button>
+                </div>
             </div>
             <div id="authError" class="auth-error hidden" role="alert"></div>
         </div>
@@ -60,11 +68,14 @@
         <!-- Account / Loading Panel -->
         <div id="pnlLoadingAccount" class="card account-section hidden">
             <div class="account-header">
-                <div class="avatar" id="avatarLetter">?</div>
-                <div>
-                    <div class="account-label">Logged in as</div>
-                    <div class="account-name" id="userName"></div>
+                <div class="account-identity">
+                    <div class="avatar" id="avatarLetter">?</div>
+                    <div>
+                        <div class="account-label">Current Spotify account</div>
+                        <div class="account-name" id="userName"></div>
+                    </div>
                 </div>
+                <button id="btnSwitchAccount" class="text-button" type="button">Switch account</button>
             </div>
             <div class="stats">
                 <div class="stat-card">
@@ -110,9 +121,11 @@
                 </div>
             </div>
             <div class="backup-assurance">
-                <strong><span id="readyLikedSongs">0</span> Liked Songs verified for export.</strong>
+                <strong><span id="readyLikedSongs">0</span> Liked Songs and <span id="readyPlaylists">0</span> playlists verified for export.</strong>
                 <span id="likedSongsNote"></span>
+                <span id="playlistBackupNote"></span>
                 Same-name playlists are merged during restore; only songs missing from the target playlist are added.
+                New playlists keep their descriptions; a same-name destination keeps its existing description.
                 Playlist added dates are archived for reference, but Spotify assigns the import date when restoring them.
             </div>
         </div>
@@ -142,6 +155,15 @@
                         <div class="file-meta"><span id="filePlaylists">0</span> playlists · <span id="fileTracks">0</span> tracks</div>
                     </div>
                 </div>
+                <div class="import-target">
+                    <span>Import target</span>
+                    <strong id="importTargetName"></strong>
+                    <small>Only this currently connected Spotify account will be changed.</small>
+                </div>
+                <div class="button-row">
+                    <button id="btnStartImport" class="btn btn-primary" type="button">Import into this account</button>
+                    <button id="btnCancelImport" class="btn btn-secondary" type="button">Choose another file</button>
+                </div>
             </div>
         </div>
 
@@ -165,6 +187,28 @@
                 </div>
             </div>
             <div id="globalStep" class="progress-status"></div>
+        </div>
+
+        <!-- Import Completion Panel -->
+        <div id="pnlComplete" class="card completion-section hidden" role="status">
+            <div class="completion-icon" aria-hidden="true">✓</div>
+            <h2 id="completionTitle">Import complete</h2>
+            <p id="completionSummary"></p>
+            <div class="verification-grid">
+                <div>
+                    <strong id="completionLikedPresence">—</strong>
+                    <span>Liked Songs present</span>
+                </div>
+                <div>
+                    <strong id="completionLikedOrder">—</strong>
+                    <span>Recently Added order</span>
+                </div>
+            </div>
+            <div class="completion-actions">
+                <button id="btnSwitchAfterImport" class="btn btn-primary" type="button">Switch Spotify account</button>
+                <button id="btnBackToDashboard" class="btn btn-secondary" type="button">Back to dashboard</button>
+            </div>
+            <small>Switching accounts clears only this app’s login token. It does not remove or change anything in the previous account.</small>
         </div>
 
     </div>
@@ -197,7 +241,17 @@
         skipped: 0,
         message: 'Liked Songs have not been loaded yet.'
     };
+    var playlistLibraryState = {
+        complete: false,
+        playlistCount: 0,
+        trackCount: 0,
+        expectedTrackItems: null,
+        skippedTrackItems: 0,
+        message: 'Playlists have not been loaded yet.'
+    };
     var importErrors = [];
+    var importWarnings = [];
+    var likedSongRestoreVerification = null;
     var likedSongDatesPreserved = true;
 
     // Get delay for next request — respects 429 Retry-After header
@@ -226,13 +280,16 @@
             $('#loadingTitle').removeClass('status-error');
             $('#loadingLikedSongs').text('--');
             $('#loadingTitle').html('Loading your library data…');
-            refreshPlaylist(function () {
+            refreshPlaylist(function (playlistsComplete) {
                 refreshMyMusicTracks(function (likedSongsComplete) {
-                    if (!likedSongsComplete) {
+                    if (!likedSongsComplete || !playlistsComplete) {
                         isExporting = false;
+                        var incompleteMessages = [];
+                        if (!likedSongsComplete) incompleteMessages.push(likedSongsState.message);
+                        if (!playlistsComplete) incompleteMessages.push(playlistLibraryState.message);
                         $('#loadingTitle').addClass('status-error').text(
-                            likedSongsState.message
-                            + ' Export is disabled so an incomplete Liked Songs backup cannot be created.'
+                            incompleteMessages.join(' ')
+                            + ' Export is disabled so an incomplete backup cannot be created.'
                         );
                         $('#btnRetryLoad').removeClass('hidden');
                         callback(false);
@@ -245,14 +302,20 @@
                                     refreshFollowedArtists(function () {
                                         $('#loadingTitle').html('All loaded! Choose to export or import below.');
                                         $('#loadingTitle').removeClass('status-error').text(
-                                            'All loaded. ' + likedSongsState.count + ' Liked Songs verified.'
+                                            'All loaded. ' + likedSongsState.count + ' Liked Songs and '
+                                            + playlistLibraryState.playlistCount + ' playlists verified.'
                                         );
                                         $('#readyLikedSongs').text(likedSongsState.count);
+                                        $('#readyPlaylists').text(playlistLibraryState.playlistCount);
                                         $('#likedSongsNote').text(
                                             likedSongsState.skipped > 0
                                                 ? likedSongsState.skipped
                                                     + ' unavailable or local Liked Songs could not be exported. '
                                                 : ''
+                                        );
+                                        $('#playlistBackupNote').text(
+                                            playlistLibraryState.trackCount
+                                            + ' editable playlist tracks and playlist descriptions verified. '
                                         );
                                         isExporting = false;
                                         callback(true);
@@ -304,7 +367,11 @@
     }
 
     function updateClientIdStatus() {
-        $('#clientIdStatus').text(currentClientId() ? 'Client ID saved in this browser' : 'Client ID required');
+        var clientId = currentClientId();
+        $('#clientIdStatus').text(
+            clientId ? 'Saved in this browser · ending ' + clientId.slice(-6) : 'Client ID required'
+        ).toggleClass('status-missing', !clientId);
+        $('#forgetClientId').toggleClass('hidden', !clientId || Boolean(conf.client_id));
     }
 
     function showAuthMessage(message) {
@@ -358,7 +425,14 @@
         }
     }
 
-    async function login() {
+    function forgetClientId() {
+        localStorage.removeItem(MySpotOAuth.CLIENT_ID_KEY);
+        $('#spotifyClientId').val('');
+        updateClientIdStatus();
+        $('#spotifyClientId').focus();
+    }
+
+    async function login(showDialog) {
         try {
             var clientId = currentClientId();
             if (!clientId) {
@@ -369,12 +443,27 @@
             var authorizationUrl = await MySpotOAuth.createAuthorizationRequest({
                 clientId: clientId,
                 pageUrl: window.location.href,
+                showDialog: showDialog === true,
                 storage: window.localStorage
             });
             window.location.assign(authorizationUrl);
         } catch (error) {
             alert('Could not start Spotify login: ' + error.message);
         }
+    }
+
+    function switchAccount() {
+        if (isImporting || isExporting) {
+            alert('Please wait for the current operation to finish before switching accounts.');
+            return;
+        }
+        if (!confirm(
+            'Disconnect from "' + name + '" and open Spotify login?\n\n'
+            + 'This only clears MySpotBackup’s login token. It will not change the previous Spotify account.'
+        )) return;
+        MySpotOAuth.clearAuthorizationSession(window.sessionStorage, window.localStorage);
+        token = null;
+        login(true);
     }
 
     function download(filename, text) {
@@ -416,8 +505,7 @@
                     }
                     $('#pnlFile').addClass('hidden');
                     $('#pnlFileInfo').removeClass('hidden');
-                    $('#pnlUpload').removeClass('hidden');
-                    compareEverything();
+                    $('#importTargetName').text(name);
                 } catch (error) {
                     alert('Could not import this backup: ' + error.message);
                     evt.target.value = '';
@@ -427,6 +515,25 @@
         } else {
             alert("Failed to load file");
         }
+    }
+
+    function cancelImportSelection() {
+        importColl = undefined;
+        $('#fileImport').val('');
+        $('#pnlFileInfo').addClass('hidden');
+        $('#pnlFile').removeClass('hidden');
+    }
+
+    function startConfirmedImport() {
+        if (typeof importColl === 'undefined') return;
+        if (!confirm(
+            'Import this backup into "' + name + '"?\n\n'
+            + 'Songs and playlists will be added or merged only in this currently connected account.'
+        )) return;
+        $('#pnlImport').addClass('hidden');
+        $('#pnlComplete').addClass('hidden');
+        $('#pnlUpload').removeClass('hidden');
+        compareEverything();
     }
 
     function collectionProperties(coll) {
@@ -463,6 +570,8 @@
             artistFollowQueue = [];
             librarySaveQueues = { albums: [], shows: [], episodes: [], audiobooks: [] };
             importErrors = [];
+            importWarnings = [];
+            likedSongRestoreVerification = null;
             likedSongDatesPreserved = true;
             globalStep = "Uploading";
             if (typeof importColl !== 'undefined') {
@@ -525,20 +634,48 @@
     }
 
     function finishImport() {
+        var successMessage = 'Finished uploading into ' + name + '.';
         globalStep = importErrors.length > 0
             ? 'Finished with errors: ' + importErrors.join(' ')
-            : (
-                'Finished uploading. Liked Songs and playlists restored.'
-                + ((importColl.saved || []).length > 0
-                    ? (likedSongDatesPreserved
-                        ? ' Spotify accepted the original-date requests for Liked Songs, including songs already liked.'
-                        : ' Spotify did not accept original Liked Songs dates, so those songs use the import date.')
-                    : '')
-            );
+            : successMessage;
         trackTotal = trackStep;
         playlistTotal = playlistStep;
         isImporting = false;
         makingChanges = false;
+        var verification = likedSongRestoreVerification || {
+            expectedCount: (importColl.saved || []).length,
+            presentCount: 0,
+            missing: (importColl.saved || []).length,
+            orderVerified: false,
+            orderMismatch: 0
+        };
+        $('#completionTitle').text(
+            importErrors.length > 0
+                ? 'Import finished with errors'
+                : (importWarnings.length > 0 ? 'Import complete with a warning' : 'Import complete')
+        );
+        var summaryParts = [];
+        if (importErrors.length > 0) summaryParts.push(importErrors.join(' '));
+        if (importWarnings.length > 0) summaryParts.push(importWarnings.join(' '));
+        if (summaryParts.length === 0) {
+            summaryParts.push(
+                successMessage + ' Every backed-up Liked Song was found after the restore.'
+            );
+        }
+        if (!likedSongDatesPreserved && verification.expectedCount > 0) {
+            summaryParts.push(
+                'Spotify rejected historical timestamps for at least one batch, so those songs use import dates.'
+            );
+        }
+        $('#completionSummary').text(summaryParts.join(' '));
+        $('#completionLikedPresence').text(
+            verification.presentCount + ' / ' + verification.expectedCount
+        );
+        $('#completionLikedOrder')
+            .text(verification.orderVerified ? 'Verified' : 'Needs review')
+            .toggleClass('verification-warning', !verification.orderVerified);
+        $('#pnlUpload').addClass('hidden');
+        $('#pnlComplete').removeClass('hidden');
     }
 
     function handleTrackUpload() {
@@ -560,15 +697,20 @@
             $('#progressBar').show();
             globalStep = "Uploading tracks";
             handleSavedRequests(savedQueue.slice(), function () {
-                globalStep = 'Verifying Liked Songs';
-                var verificationBatches = MySpotBackup.createLikedSongVerificationBatches(
-                    importColl.saved || []
-                );
-                verifyLikedSongs(verificationBatches, {checked: 0, missing: 0}, function (verification) {
+                globalStep = 'Verifying Liked Songs presence and order';
+                verifyRestoredLikedSongs(function (verification) {
+                    likedSongRestoreVerification = verification;
                     if (verification.missing > 0) {
                         importErrors.push(
-                            verification.missing + ' of ' + verification.checked
+                            verification.missing + ' of ' + verification.expectedCount
                             + ' Liked Songs could not be verified after restore.'
+                        );
+                    }
+                    if (!verification.orderVerified && verification.missing === 0) {
+                        importWarnings.push(
+                            'All Liked Songs are present, but Spotify returned '
+                            + verification.orderMismatch
+                            + ' songs outside the backup’s Recently Added order.'
                         );
                     }
                     handlePlaylistRequests(playlistQueue.reverse(), function () {
@@ -605,43 +747,43 @@
             });
         } else {
             globalStep = "No new items found in import";
-            isImporting = false;
-            makingChanges = false;
+            verifyRestoredLikedSongs(function (verification) {
+                likedSongRestoreVerification = verification;
+                if (verification.missing > 0) {
+                    importErrors.push(
+                        verification.missing + ' of ' + verification.expectedCount
+                        + ' Liked Songs could not be verified after restore.'
+                    );
+                }
+                finishImport();
+            });
         }
     }
 
-    function verifyLikedSongs(batches, result, callback) {
-        if (batches.length === 0) { callback(result); return; }
-        var uris = batches.shift();
-        var urisParam = uris.map(function (uri) { return encodeURIComponent(uri); }).join(',');
-        var lastXHR = null;
-        $.ajax({
-            method: 'GET',
-            url: 'https://api.spotify.com/v1/me/library/contains?uris=' + urisParam,
-            headers: {'Authorization': 'Bearer ' + token},
-            success: function (savedResults) {
-                result.checked += uris.length;
-                $.each(savedResults, function (index, isSaved) {
-                    if (!isSaved) result.missing += 1;
-                });
-            },
-            error: function (jqXHR) {
-                lastXHR = jqXHR;
-                var attempts = uris.attempts || 0;
-                if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
-                    uris.attempts = attempts + 1;
-                    batches.unshift(uris);
-                } else {
-                    result.checked += uris.length;
-                    result.missing += uris.length;
+    function verifyRestoredLikedSongs(callback) {
+        var restored = [];
+        var loadSummary = {
+            expectedTotal: null,
+            receivedItems: 0,
+            savedTracks: restored,
+            skipped: 0,
+            error: null
+        };
+        loadSavedTrackChunks(
+            'https://api.spotify.com/v1/me/tracks?limit=50',
+            restored,
+            loadSummary,
+            function () {
+                var loadState = MySpotBackup.assessLikedSongsLoad(loadSummary);
+                if (!loadState.complete) {
+                    importErrors.push(
+                        'Could not completely reload Liked Songs for verification. '
+                        + loadState.message
+                    );
                 }
+                callback(MySpotBackup.assessLikedSongsRestore(importColl.saved || [], restored));
             }
-        }).always(function () {
-            var delay = getRetryDelay(lastXHR);
-            setTimeout(function () {
-                verifyLikedSongs(batches, result, callback);
-            }, delay);
-        });
+        );
     }
 
     function handleFollowRequests(arr, callback) {
@@ -720,7 +862,7 @@
         if (!storageKey) { callback(); return; }
         var importedPlaylist = importColl.playlists[storageKey];
         var playlistName = importedPlaylist.name || storageKey;
-        makeSurePlaylistExists(playlistName, function (proceed, targetPlaylist) {
+        makeSurePlaylistExists(importedPlaylist, function (proceed, targetPlaylist) {
             if (proceed) {
                 var missingUris = MySpotBackup.missingPlaylistTrackUris(
                     importedPlaylist.tracks,
@@ -738,12 +880,22 @@
         return MySpotBackup.queuePlaylistTrack(playlistQueue, playlistId, trackUri);
     }
 
-    function makeSurePlaylistExists(name, callback, attempts) {
+    function makeSurePlaylistExists(sourcePlaylist, callback, attempts) {
         attempts = attempts || 0;
+        var playlistSource = typeof sourcePlaylist === 'string'
+            ? {name: sourcePlaylist, description: '', public: true}
+            : sourcePlaylist;
+        var name = playlistSource.name;
         if (attempts === 0) playlistStep += 1;
         var existing = MySpotBackup.findPlaylistByName(collections.playlists, name);
         if (existing) { callback(true, existing); return; }
-        var set = {name: name, public: "true"};
+        var set = {
+            name: name,
+            description: typeof playlistSource.description === 'string'
+                ? playlistSource.description
+                : '',
+            public: playlistSource.public !== false
+        };
         $.ajax({
             method: "POST",
             url: 'https://api.spotify.com/v1/me/playlists',
@@ -756,6 +908,9 @@
                     name: response.name,
                     href: itemsData ? itemsData.href : ('https://api.spotify.com/v1/playlists/' + response.id + '/items'),
                     id: response.id,
+                    description: typeof response.description === 'string' ? response.description : set.description,
+                    public: response.public !== false,
+                    collaborative: response.collaborative === true,
                     tracks: []
                 };
                 collections.playlists[
@@ -766,7 +921,7 @@
             error: function (jqXHR) {
                 if (MySpotBackup.shouldRetrySpotifyPostStatus(jqXHR.status, attempts)) {
                     setTimeout(function () {
-                        makeSurePlaylistExists(name, callback, attempts + 1);
+                        makeSurePlaylistExists(playlistSource, callback, attempts + 1);
                     }, getRetryDelay(jqXHR));
                 } else {
                     importErrors.push(
@@ -922,15 +1077,16 @@
             $('#pnlImport').removeClass('hidden');
         });
         $('#btnExport').click(function () {
-            if (!likedSongsState.complete) {
-                alert('Export blocked: Liked Songs have not been completely verified. Retry the library load.');
+            if (!likedSongsState.complete || !playlistLibraryState.complete) {
+                alert('Export blocked: Liked Songs or playlists have not been completely verified. Retry the library load.');
                 return;
             }
             try {
                 var snapshot = MySpotBackup.createExportSnapshot(
                     collections,
                     likedSongsState,
-                    new Date().toISOString()
+                    new Date().toISOString(),
+                    playlistLibraryState
                 );
                 var json = JSON.stringify(snapshot);
                 var d = new Date();
@@ -941,6 +1097,17 @@
             }
         });
         $('#btnRetryLoad').click(function () {
+            refreshTrackData(function (complete) {
+                if (complete) $('#pnlAction').removeClass('hidden');
+            });
+        });
+        $('#btnStartImport').click(startConfirmedImport);
+        $('#btnCancelImport').click(cancelImportSelection);
+        $('#btnSwitchAccount, #btnSwitchAfterImport').click(switchAccount);
+        $('#btnBackToDashboard').click(function () {
+            cancelImportSelection();
+            $('#pnlComplete, #pnlImport, #pnlAction').addClass('hidden');
+            $('#pnlLoadingAccount').removeClass('hidden');
             refreshTrackData(function (complete) {
                 if (complete) $('#pnlAction').removeClass('hidden');
             });
@@ -1120,8 +1287,9 @@
                 }
                 userId = String(response.id || response.account_id);
                 name = response.display_name || user_id;
-                $('#userName').html(name);
-                $('#avatarLetter').html(name.charAt(0).toUpperCase());
+                $('#userName').text(name);
+                $('#avatarLetter').text(name.charAt(0).toUpperCase());
+                $('#importTargetName').text(name);
                 $('#pnlLoggedOut').addClass('hidden');
                 refreshTrackData(function (complete) {
                     if (complete) $('#pnlAction').removeClass('hidden');
@@ -1166,8 +1334,9 @@
                     callback();
                     return;
                 }
-                if (summary.expectedTotal === null && data.total !== undefined) {
-                    summary.expectedTotal = Number(data.total);
+                var reportedTotal = MySpotBackup.reportedSpotifyTotal(data.total);
+                if (summary.expectedTotal === null && reportedTotal !== null) {
+                    summary.expectedTotal = reportedTotal;
                 }
                 summary.receivedItems += data.items.length;
                 $.each(data.items, function (index, value) {
@@ -1304,32 +1473,60 @@
         });
     }
 
-    function loadTrackChunksWithTimeout(url, arr, callback) {
-        setTimeout(function () { loadTrackChunks(url, arr, callback); }, conf.slowdown_export);
+    function loadTrackChunksWithTimeout(url, arr, summary, callback) {
+        setTimeout(function () {
+            loadTrackChunks(url, arr, summary, callback);
+        }, conf.slowdown_export);
     }
 
-    function loadTrackChunks(url, arr, callback) {
+    function loadTrackChunks(url, arr, summary, callback, attempts) {
+        attempts = attempts || 0;
         $.ajax({
             url: url,
             headers: {'Authorization': 'Bearer ' + token},
             success: function (data) {
-                if (!data) return;
+                if (!data) {
+                    summary.error = {status: 0};
+                    callback();
+                    return;
+                }
                 if ('items' in data) {
+                    var reportedTotal = MySpotBackup.reportedSpotifyTotal(data.total);
+                    if (summary.expectedTotal === null && reportedTotal !== null) {
+                        summary.expectedTotal = reportedTotal;
+                    }
+                    summary.receivedItems += data.items.length;
                     $.each(data.items, function (index, value) {
                         var playlistItem = MySpotBackup.playlistItemFromSpotify(value);
-                        if (playlistItem) arr.push(playlistItem);
-                        else console.log("track is null", value);
+                        if (playlistItem) {
+                            arr.push(playlistItem);
+                            summary.restorableItems += 1;
+                        } else {
+                            summary.skipped += 1;
+                        }
                     });
                 } else {
+                    summary.receivedItems += 1;
                     var playlistItem = MySpotBackup.playlistItemFromSpotify(data);
-                    if (playlistItem) arr.push(playlistItem);
+                    if (playlistItem) {
+                        arr.push(playlistItem);
+                        summary.restorableItems += 1;
+                    } else {
+                        summary.skipped += 1;
+                    }
                 }
-                if (data.next) { loadTrackChunksWithTimeout(data.next, arr, callback); }
+                if (data.next) { loadTrackChunksWithTimeout(data.next, arr, summary, callback); }
                 else { callback(); }
             },
-            error: function (jqXHR, textStatus, errorThrown) {
-                console.warn('Track fetch failed (' + jqXHR.status + ') for: ' + url + ' - skipping');
-                callback();
+            error: function (jqXHR) {
+                if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                    setTimeout(function () {
+                        loadTrackChunks(url, arr, summary, callback, attempts + 1);
+                    }, getRetryDelay(jqXHR, conf.slowdown_export));
+                } else {
+                    summary.error = {status: jqXHR.status};
+                    callback();
+                }
             }
         });
     }
@@ -1338,29 +1535,55 @@
         collections.playlists = {};
         collections.followedPlaylists = [];
         var playlists = [];
-        loadPlaylistChunks('https://api.spotify.com/v1/me/playlists', playlists, function () {
-            handlePlaylistTracks(playlists, collections.playlists, callback);
+        var loadSummary = {
+            expectedPlaylists: null,
+            receivedPlaylists: 0,
+            expectedTrackItems: 0,
+            missingTrackTotals: 0,
+            receivedTrackItems: 0,
+            restorableTrackItems: 0,
+            skippedTrackItems: 0,
+            error: null
+        };
+        loadPlaylistChunks('https://api.spotify.com/v1/me/playlists?limit=50', playlists, loadSummary, function () {
+            handlePlaylistTracks(playlists, collections.playlists, loadSummary, function () {
+                playlistLibraryState = MySpotBackup.assessPlaylistLibraryLoad(loadSummary);
+                callback(playlistLibraryState.complete);
+            });
         });
     }
 
-    function loadPlaylistChunks(url, arr, callback) {
+    function loadPlaylistChunks(url, arr, summary, callback, attempts) {
+        attempts = attempts || 0;
         $.ajax({
             url: url,
             headers: {'Authorization': 'Bearer ' + token},
             success: function (data) {
-                if (!data) return;
-                console.log('Playlist API response:', data);
+                if (!data || !Array.isArray(data.items)) {
+                    summary.error = {status: 0};
+                    callback();
+                    return;
+                }
+                var reportedPlaylistTotal = MySpotBackup.reportedSpotifyTotal(data.total);
+                if (summary.expectedPlaylists === null && reportedPlaylistTotal !== null) {
+                    summary.expectedPlaylists = reportedPlaylistTotal;
+                }
+                summary.receivedPlaylists += data.items.length;
                 if ('items' in data) {
                     $.each(data.items, function (index, value) {
+                        var metadata = MySpotBackup.playlistMetadataFromSpotify(value);
+                        if (!metadata) {
+                            summary.error = {status: 0};
+                            return;
+                        }
                         // Feb 2026: Dev Mode only allows fetching items for owned/collaborative playlists
                         var isOwned = value.owner && value.owner.id === userId;
                         var isCollab = value.collaborative === true;
                         if (!isOwned && !isCollab) {
-                            // Save non-owned playlist for follow-on-import
-                            console.log('Non-owned playlist (will be followed on import):', value.name);
                             collections.followedPlaylists.push({
                                 id: value.id,
                                 name: value.name,
+                                description: metadata.description,
                                 owner: value.owner ? value.owner.id : 'unknown',
                                 uri: value.uri || ('spotify:playlist:' + value.id)
                             });
@@ -1369,43 +1592,75 @@
                         // Feb 2026: 'tracks' renamed to 'items' in playlist objects
                         var tracksRef = value.items || value.tracks;
                         var href = tracksRef ? tracksRef.href : ('https://api.spotify.com/v1/playlists/' + value.id + '/items');
-                        console.log('Found owned playlist:', value.name, 'href:', href);
-                        arr.push({name: value.name, href: href, id: value.id, tracks: []});
+                        var expectedTrackItems = tracksRef
+                            ? MySpotBackup.reportedSpotifyTotal(tracksRef.total)
+                            : null;
+                        if (expectedTrackItems !== null) {
+                            summary.expectedTrackItems += expectedTrackItems;
+                        } else {
+                            summary.missingTrackTotals += 1;
+                        }
+                        arr.push({
+                            name: metadata.name,
+                            description: metadata.description,
+                            public: metadata.public,
+                            collaborative: metadata.collaborative,
+                            href: href,
+                            id: metadata.id,
+                            expectedTrackItems: expectedTrackItems,
+                            tracks: []
+                        });
                     });
-                } else {
-                    var tracksRef = data.items || data.tracks;
-                    if (tracksRef && tracksRef.href) {
-                        arr.push({name: data.name, href: tracksRef.href, id: data.id, tracks: []});
-                    }
                 }
-                console.log('Total playlists so far:', arr.length);
-                if (data.next) { loadPlaylistChunks(data.next, arr, callback); }
+                if (data.next) { loadPlaylistChunks(data.next, arr, summary, callback); }
                 else { callback(); }
             },
-            error: function (jqXHR, textStatus, errorThrown) {
-                console.error('Playlist fetch failed:', jqXHR.status, textStatus, errorThrown);
-                console.error('Response:', jqXHR.responseText);
-                callback();
+            error: function (jqXHR) {
+                if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                    setTimeout(function () {
+                        loadPlaylistChunks(url, arr, summary, callback, attempts + 1);
+                    }, getRetryDelay(jqXHR, conf.slowdown_export));
+                } else {
+                    summary.error = {status: jqXHR.status};
+                    callback();
+                }
             }
         });
     }
 
-    function handlePlaylistTracks(arr, result, callback) {
+    function handlePlaylistTracks(arr, result, summary, callback) {
         var item = arr.pop();
         if (!item) return callback();
         playlistStep += 1;
         item.tracks = [];
-        loadTrackChunks(item.href, item.tracks, function () {
+        var trackSummary = {
+            expectedTotal: item.expectedTrackItems,
+            receivedItems: 0,
+            restorableItems: 0,
+            skipped: 0,
+            error: null
+        };
+        loadTrackChunks(item.href, item.tracks, trackSummary, function () {
+            if (item.expectedTrackItems === null && trackSummary.expectedTotal !== null) {
+                summary.expectedTrackItems += trackSummary.expectedTotal;
+                summary.missingTrackTotals -= 1;
+            }
+            summary.receivedTrackItems += trackSummary.receivedItems;
+            summary.restorableTrackItems += trackSummary.restorableItems;
+            summary.skippedTrackItems += trackSummary.skipped;
+            if (trackSummary.error && !summary.error) summary.error = trackSummary.error;
             delete item.href;
+            delete item.expectedTrackItems;
             result[MySpotBackup.playlistStorageKey(item, result)] = item;
             if (arr.length == 0) callback();
-            else handlePlaylistTracks(arr, result, callback);
+            else handlePlaylistTracks(arr, result, summary, callback);
         });
     }
 
     window.onload = function () {
         $('#login').click(login);
         $('#saveClientId').click(saveClientId);
+        $('#forgetClientId').click(forgetClientId);
         bindControls();
         refreshProgress();
         updateClientIdStatus();

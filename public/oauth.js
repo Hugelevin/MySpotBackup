@@ -78,7 +78,7 @@
         }));
 
         const url = new URL(AUTHORIZE_URL);
-        url.search = new URLSearchParams({
+        const authorizationParams = {
             client_id: clientId,
             response_type: 'code',
             redirect_uri: redirectUri,
@@ -86,8 +86,21 @@
             state,
             code_challenge_method: 'S256',
             code_challenge: challenge,
-        }).toString();
+        };
+        if (options.showDialog) authorizationParams.show_dialog = 'true';
+        url.search = new URLSearchParams(authorizationParams).toString();
         return url.toString();
+    }
+
+    function clearAuthorizationSession(sessionStorage, storage) {
+        sessionStorage.removeItem(TOKEN_KEY);
+        if (!storage || typeof storage.key !== 'function') return;
+        const pendingKeys = [];
+        for (let index = 0; index < storage.length; index += 1) {
+            const key = storage.key(index);
+            if (key && key.indexOf(PENDING_PREFIX) === 0) pendingKeys.push(key);
+        }
+        pendingKeys.forEach(key => storage.removeItem(key));
     }
 
     async function completeAuthorization(options) {
@@ -160,6 +173,7 @@
         CLIENT_ID_KEY,
         TOKEN_KEY,
         callbackUrl,
+        clearAuthorizationSession,
         completeAuthorization,
         createAuthorizationRequest,
         getAccessToken,

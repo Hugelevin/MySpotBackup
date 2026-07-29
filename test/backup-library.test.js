@@ -3,6 +3,15 @@ const test = require('node:test');
 
 const BackupTools = require('../public/backup.js');
 
+test('Spotify totals preserve the difference between missing and zero', () => {
+    assert.equal(BackupTools.reportedSpotifyTotal(null), null);
+    assert.equal(BackupTools.reportedSpotifyTotal(undefined), null);
+    assert.equal(BackupTools.reportedSpotifyTotal(''), null);
+    assert.equal(BackupTools.reportedSpotifyTotal('not-a-number'), null);
+    assert.equal(BackupTools.reportedSpotifyTotal(0), 0);
+    assert.equal(BackupTools.reportedSpotifyTotal('12'), 12);
+});
+
 test('a liked song backup preserves its Spotify ID, URI, and date liked', () => {
     assert.deepEqual(
         BackupTools.savedTrackFromSpotify({
@@ -94,7 +103,7 @@ test('the exported backup declares a complete Liked Songs count', () => {
         skipped: 0,
         preservesAddedAt: true,
     });
-    assert.equal(snapshot.backup.formatVersion, 2);
+    assert.equal(snapshot.backup.formatVersion, 3);
 });
 
 test('Liked Songs restore batches attempt backed-up dates even for songs already liked', () => {
@@ -128,6 +137,152 @@ test('Liked Songs restore batches attempt backed-up dates even for songs already
             tracks: [{ id: 'legacy', uri: 'spotify:track:legacy', addedAt: null }],
         },
     ]);
+});
+
+test('a local playlist item is archived even though Spotify cannot restore it', () => {
+    assert.deepEqual(
+        BackupTools.playlistItemFromSpotify({
+            added_at: '2022-06-01T10:00:00Z',
+            added_by: { id: 'spotify-user' },
+            item: {
+                id: null,
+                uri: 'spotify:local:Artist:Album:Song:180',
+            },
+        }),
+        {
+            id: null,
+            uri: 'spotify:local:Artist:Album:Song:180',
+            addedAt: '2022-06-01T10:00:00Z',
+            addedBy: 'spotify-user',
+        },
+    );
+});
+
+test('playlist metadata preserves descriptions and converts Spotify null to an empty string', () => {
+    assert.deepEqual(
+        BackupTools.playlistMetadataFromSpotify({
+            id: 'playlist-1',
+            name: 'Road Trip',
+            description: 'Windows down, volume up.',
+            public: false,
+            collaborative: false,
+        }),
+        {
+            id: 'playlist-1',
+            name: 'Road Trip',
+            description: 'Windows down, volume up.',
+            public: false,
+            collaborative: false,
+        },
+    );
+    assert.equal(
+        BackupTools.playlistMetadataFromSpotify({
+            id: 'playlist-2',
+            name: 'Empty description',
+            description: null,
+        }).description,
+        '',
+    );
+});
+
+test('Liked Songs restore requests run oldest-first to preserve Recently Added order', () => {
+    const batches = BackupTools.createLikedSongRestoreBatches(
+        [
+            { id: 'newest', uri: 'spotify:track:newest', addedAt: '2025-01-03T00:00:00Z' },
+            { id: 'middle', uri: 'spotify:track:middle', addedAt: '2025-01-02T00:00:00Z' },
+            { id: 'oldest', uri: 'spotify:track:oldest', addedAt: '2025-01-01T00:00:00Z' },
+        ],
+        [],
+    );
+
+    assert.deepEqual(
+        batches.flatMap(batch => batch.tracks.map(track => track.id)),
+        ['oldest', 'middle', 'newest'],
+    );
+});
+
+test('Liked Songs verification distinguishes presence from Recently Added order', () => {
+    const imported = [
+        { id: 'newest', addedAt: '2025-01-03T00:00:00Z' },
+        { id: 'middle', addedAt: '2025-01-02T00:00:00Z' },
+        { id: 'oldest', addedAt: '2025-01-01T00:00:00Z' },
+    ];
+
+    assert.deepEqual(
+        BackupTools.assessLikedSongsRestore(imported, [
+            { id: 'newest' },
+            { id: 'oldest' },
+            { id: 'middle' },
+        ]),
+        {
+            expectedCount: 3,
+            presentCount: 3,
+            missing: 0,
+            orderVerified: false,
+            orderMismatch: 2,
+        },
+    );
+});
+
+test('playlist export verification fails on a truncated playlist page', () => {
+    assert.deepEqual(
+        BackupTools.assessPlaylistLibraryLoad({
+            expectedPlaylists: 4,
+            receivedPlaylists: 4,
+            expectedTrackItems: 120,
+            receivedTrackItems: 100,
+            restorableTrackItems: 100,
+            skippedTrackItems: 0,
+            error: null,
+        }),
+        {
+            complete: false,
+            playlistCount: 4,
+            trackCount: 100,
+            expectedTrackItems: 120,
+            skippedTrackItems: 0,
+            message: 'Spotify returned only 100 of 120 editable playlist items.',
+        },
+    );
+});
+
+test('playlist export verification rejects a missing Spotify playlist total', () => {
+    assert.deepEqual(
+        BackupTools.assessPlaylistLibraryLoad({
+            expectedPlaylists: null,
+            receivedPlaylists: 0,
+            expectedTrackItems: 0,
+            receivedTrackItems: 0,
+            restorableTrackItems: 0,
+            skippedTrackItems: 0,
+            missingTrackTotals: 0,
+            error: null,
+        }),
+        {
+            complete: false,
+            playlistCount: 0,
+            trackCount: 0,
+            expectedTrackItems: 0,
+            skippedTrackItems: 0,
+            message: 'Spotify did not report the total number of playlists.',
+        },
+    );
+});
+
+test('playlist export verification rejects any editable playlist with an unknown item total', () => {
+    assert.equal(
+        BackupTools.assessPlaylistLibraryLoad({
+            expectedPlaylists: 1,
+            receivedPlaylists: 1,
+            expectedTrackItems: 0,
+            receivedTrackItems: 0,
+            restorableTrackItems: 0,
+            skippedTrackItems: 0,
+            missingTrackTotals: 1,
+            error: null,
+        }).message,
+        'Spotify did not report all editable playlist item totals.',
+    );
 });
 
 test('same-name playlists remain distinct in a backup but merge only missing songs on restore', () => {
@@ -243,6 +398,24 @@ test('an export cannot be created when its verified Liked Songs count does not m
             '2026-07-29T20:00:00.000Z',
         ),
         /Liked Songs count changed/,
+    );
+});
+
+test('an export cannot claim success when editable playlist tracks are incomplete', () => {
+    assert.throws(
+        () => BackupTools.createExportSnapshot(
+            { playlists: {}, saved: [] },
+            { complete: true, count: 0, expectedTotal: 0, skipped: 0 },
+            '2026-07-29T20:00:00.000Z',
+            {
+                complete: false,
+                playlistCount: 1,
+                trackCount: 9,
+                expectedTrackItems: 10,
+                skippedTrackItems: 0,
+            },
+        ),
+        /playlist data has not been completely verified/i,
     );
 });
 
