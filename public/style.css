@@ -234,7 +234,7 @@ body {
 .account-label { font-size: 12px; color: var(--text-muted); font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
 
 .stats {
-  display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin-bottom: 20px;
 }
 
 .stat-card {
@@ -252,10 +252,45 @@ body {
   font-size: 13px; color: var(--text-secondary); animation: pulse 2s ease infinite;
 }
 
+.status-msg.status-error {
+  color: #ffb3b3;
+  background: rgba(255,107,107,0.1);
+  border-color: rgba(255,107,107,0.35);
+  animation: none;
+}
+
+#btnRetryLoad {
+  margin-top: 12px;
+}
+
 /* Action Buttons */
 .actions { margin-top: 16px; animation-delay: 0.2s; }
 
 .action-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px; }
+
+.backup-assurance {
+  margin-top: 16px;
+  padding: 12px 14px;
+  border-radius: var(--radius-sm);
+  border: 1px solid rgba(29,185,84,0.18);
+  background: rgba(29,185,84,0.07);
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.backup-assurance strong {
+  display: block;
+  color: var(--accent);
+  margin-bottom: 3px;
+}
+
+.file-liked {
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 3px 0;
+}
 
 .action-card {
   padding: 24px 16px; border-radius: var(--radius-sm); text-align: center;
