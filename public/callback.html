@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="robots" content="noindex">
+    <title>Connecting Spotify · MySpotBackup</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="bg-gradient"></div>
+<div class="app">
+    <div class="container">
+        <div class="card oauth-result">
+            <h1 id="oauthTitle">Connecting Spotify…</h1>
+            <p id="oauthMessage">Verifying the secure login response.</p>
+            <a id="oauthReturn" class="btn btn-secondary hidden" href="./">Return to MySpotBackup</a>
+        </div>
+    </div>
+</div>
+<script src="oauth.js"></script>
+<script>
+    (async function () {
+        try {
+            var returnUrl = await MySpotOAuth.completeAuthorization({
+                pageUrl: window.location.href,
+                storage: window.localStorage,
+                sessionStorage: window.sessionStorage,
+                fetchImpl: window.fetch.bind(window)
+            });
+            window.location.replace(returnUrl);
+        } catch (error) {
+            document.getElementById('oauthTitle').textContent = 'Spotify login failed';
+            document.getElementById('oauthMessage').textContent = error.message;
+            document.getElementById('oauthReturn').classList.remove('hidden');
+        }
+    })();
+</script>
+</body>
+</html>

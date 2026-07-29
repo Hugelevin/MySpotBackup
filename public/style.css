@@ -147,6 +147,65 @@ body {
   transform: translateY(-1px);
 }
 
+.client-id-tools {
+  margin-top: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+}
+
+.client-id-tools label {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.client-id-row {
+  display: flex;
+  gap: 8px;
+  width: min(100%, 390px);
+}
+
+.client-id-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.client-id-row input:focus {
+  outline: 2px solid rgba(29, 185, 84, 0.35);
+  border-color: var(--spotify);
+}
+
+.client-id-tools .btn {
+  font-size: 12px;
+  padding: 8px 14px;
+}
+
+#clientIdStatus {
+  color: var(--text-secondary);
+  font-size: 12px;
+}
+
+.oauth-result {
+  margin-top: 80px;
+  text-align: center;
+}
+
+.oauth-result h1 {
+  margin-bottom: 12px;
+}
+
+.oauth-result p {
+  color: var(--text-secondary);
+  margin-bottom: 22px;
+}
+
 /* Account Section */
 .account-section { margin-top: 48px; animation-delay: 0.1s; }
 
