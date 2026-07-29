@@ -104,6 +104,14 @@ The Spotify dashboard entry must be exactly:
 Confirm the Spotify account is listed under the app's User Management and that
 the developer app owner has Spotify Premium.
 
+### Spotify returns `429`
+
+Spotify is temporarily rate limiting the app. MySpotBackup waits for Spotify's
+`Retry-After` period and retries automatically. If library verification still
+stops, **Choose backup file** remains available so you can inspect and select
+the JSON; the app will verify the destination account again before it writes
+anything. Export stays disabled until the source library is completely loaded.
+
 ## Development and deployment
 
 ```powershell

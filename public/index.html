@@ -92,7 +92,10 @@
                 </div>
             </div>
             <div id="loadingTitle" class="status-msg"></div>
-            <button id="btnRetryLoad" class="btn btn-secondary hidden" type="button">Retry library load</button>
+            <div class="recovery-actions">
+                <button id="btnRetryLoad" class="btn btn-secondary hidden" type="button">Retry library load</button>
+                <button id="btnImportWhileWaiting" class="btn btn-primary hidden" type="button">Choose backup file</button>
+            </div>
         </div>
 
         <!-- Action Panel -->
@@ -159,6 +162,7 @@
                     <span>Import target</span>
                     <strong id="importTargetName"></strong>
                     <small>Only this currently connected Spotify account will be changed.</small>
+                    <small id="importReadiness">The destination library will be verified before anything is changed.</small>
                 </div>
                 <div class="button-row">
                     <button id="btnStartImport" class="btn btn-primary" type="button">Import into this account</button>
@@ -253,30 +257,46 @@
     var importWarnings = [];
     var likedSongRestoreVerification = null;
     var likedSongDatesPreserved = true;
+    var supplementalLibraryErrors = [];
+    var fullLibraryState = {complete: false};
 
-    // Get delay for next request — respects 429 Retry-After header
+    // Get delay for next request — respects Spotify's 429 Retry-After header.
     function getRetryDelay(jqXHR, defaultDelay) {
         if (jqXHR && jqXHR.status === 429) {
             var retryAfter = jqXHR.getResponseHeader('Retry-After');
             if (retryAfter) {
                 var secs = parseInt(retryAfter, 10);
-                // Cap at 60 seconds to avoid absurdly long waits
-                var waitMs = Math.min(secs, 60) * 1000;
-                console.warn('Rate limited! Waiting ' + Math.min(secs, 60) + 's (Retry-After: ' + retryAfter + 's)');
-                globalStep = '⏳ Rate limited — waiting ' + Math.min(secs, 60) + 's...';
+                var waitSeconds = Number.isFinite(secs) && secs >= 0 ? secs + 1 : 3;
+                var waitMs = waitSeconds * 1000;
+                console.warn('Rate limited! Waiting ' + waitSeconds + 's (Retry-After: ' + retryAfter + 's)');
+                globalStep = 'Spotify is rate limiting requests. Retrying in ' + waitSeconds + ' seconds…';
+                $('#loadingTitle').removeClass('status-error').text(globalStep);
                 return waitMs;
             }
+            globalStep = 'Spotify is rate limiting requests. Retrying shortly…';
+            $('#loadingTitle').removeClass('status-error').text(globalStep);
+            return Math.max(defaultDelay || conf.slowdown_import, 2000) + 1000;
         }
         return defaultDelay || conf.slowdown_import;
+    }
+
+    function incompleteLibraryDetails() {
+        var messages = [];
+        if (!likedSongsState.complete) messages.push(likedSongsState.message);
+        if (!playlistLibraryState.complete) messages.push(playlistLibraryState.message);
+        messages = messages.concat(supplementalLibraryErrors);
+        return messages.join(' ') || 'Spotify did not return a complete library snapshot.';
     }
 
     function refreshTrackData(callback) {
         if (!isExporting && !isImporting) {
             isExporting = true;
             resetCounter();
+            supplementalLibraryErrors = [];
+            fullLibraryState.complete = false;
             $('#pnlLoadingAccount').removeClass('hidden');
             $('#pnlAction').addClass('hidden');
-            $('#btnRetryLoad').addClass('hidden');
+            $('#btnRetryLoad, #btnImportWhileWaiting').addClass('hidden');
             $('#loadingTitle').removeClass('status-error');
             $('#loadingLikedSongs').text('--');
             $('#loadingTitle').html('Loading your library data…');
@@ -284,22 +304,32 @@
                 refreshMyMusicTracks(function (likedSongsComplete) {
                     if (!likedSongsComplete || !playlistsComplete) {
                         isExporting = false;
-                        var incompleteMessages = [];
-                        if (!likedSongsComplete) incompleteMessages.push(likedSongsState.message);
-                        if (!playlistsComplete) incompleteMessages.push(playlistLibraryState.message);
                         $('#loadingTitle').addClass('status-error').text(
-                            incompleteMessages.join(' ')
+                            incompleteLibraryDetails()
                             + ' Export is disabled so an incomplete backup cannot be created.'
                         );
                         $('#btnRetryLoad').removeClass('hidden');
+                        $('#btnImportWhileWaiting').removeClass('hidden');
                         callback(false);
                         return;
                     }
-                    refreshSavedAlbums(function () {
-                        refreshSavedShows(function () {
-                            refreshSavedEpisodes(function () {
-                                refreshSavedAudiobooks(function () {
-                                    refreshFollowedArtists(function () {
+                    refreshSavedAlbums(function (albumsComplete) {
+                        refreshSavedShows(function (showsComplete) {
+                            refreshSavedEpisodes(function (episodesComplete) {
+                                refreshSavedAudiobooks(function (audiobooksComplete) {
+                                    refreshFollowedArtists(function (artistsComplete) {
+                                        if (!albumsComplete || !showsComplete || !episodesComplete
+                                            || !audiobooksComplete || !artistsComplete) {
+                                            isExporting = false;
+                                            $('#loadingTitle').addClass('status-error').text(
+                                                incompleteLibraryDetails()
+                                                + ' Export is disabled so an incomplete backup cannot be created.'
+                                            );
+                                            $('#btnRetryLoad').removeClass('hidden');
+                                            $('#btnImportWhileWaiting').removeClass('hidden');
+                                            callback(false);
+                                            return;
+                                        }
                                         $('#loadingTitle').html('All loaded! Choose to export or import below.');
                                         $('#loadingTitle').removeClass('status-error').text(
                                             'All loaded. ' + likedSongsState.count + ' Liked Songs and '
@@ -317,6 +347,8 @@
                                             playlistLibraryState.trackCount
                                             + ' editable playlist tracks and playlist descriptions verified. '
                                         );
+                                        $('#btnRetryLoad, #btnImportWhileWaiting').addClass('hidden');
+                                        fullLibraryState.complete = true;
                                         isExporting = false;
                                         callback(true);
                                     });
@@ -506,6 +538,7 @@
                     $('#pnlFile').addClass('hidden');
                     $('#pnlFileInfo').removeClass('hidden');
                     $('#importTargetName').text(name);
+                    updateImportReadiness();
                 } catch (error) {
                     alert('Could not import this backup: ' + error.message);
                     evt.target.value = '';
@@ -524,16 +557,70 @@
         $('#pnlFile').removeClass('hidden');
     }
 
+    function destinationLibraryReady() {
+        return fullLibraryState.complete
+            && likedSongsState.complete
+            && playlistLibraryState.complete;
+    }
+
+    function updateImportReadiness() {
+        var ready = destinationLibraryReady();
+        $('#importReadiness')
+            .toggleClass('status-error', !ready)
+            .text(
+                ready
+                    ? 'Destination playlists and Liked Songs are fully verified. It is safe to import.'
+                    : 'Destination verification is incomplete. Start Import will retry it before changing Spotify.'
+            );
+        $('#btnStartImport').text(
+            ready ? 'Import into this account' : 'Verify destination & import'
+        );
+    }
+
+    function openImportPanel() {
+        $('#pnlAction').addClass('hidden');
+        $('#pnlImport').removeClass('hidden');
+        updateImportReadiness();
+    }
+
+    function ensureDestinationReadyForImport(callback) {
+        if (destinationLibraryReady()) {
+            callback(true);
+            return;
+        }
+
+        $('#pnlImport').addClass('hidden');
+        $('#pnlLoadingAccount').removeClass('hidden');
+        $('#loadingTitle').removeClass('status-error').text(
+            'Verifying the destination account before import…'
+        );
+        refreshTrackData(function (complete) {
+            $('#pnlImport').removeClass('hidden');
+            if (complete) $('#pnlLoadingAccount').addClass('hidden');
+            updateImportReadiness();
+            if (!complete) {
+                $('#importReadiness').addClass('status-error').text(
+                    'Destination verification is still incomplete. ' + incompleteLibraryDetails()
+                    + ' Your selected file is safe; retry when ready.'
+                );
+            }
+            callback(complete);
+        });
+    }
+
     function startConfirmedImport() {
         if (typeof importColl === 'undefined') return;
-        if (!confirm(
-            'Import this backup into "' + name + '"?\n\n'
-            + 'Songs and playlists will be added or merged only in this currently connected account.'
-        )) return;
-        $('#pnlImport').addClass('hidden');
-        $('#pnlComplete').addClass('hidden');
-        $('#pnlUpload').removeClass('hidden');
-        compareEverything();
+        ensureDestinationReadyForImport(function (ready) {
+            if (!ready) return;
+            if (!confirm(
+                'Import this backup into "' + name + '"?\n\n'
+                + 'Songs and playlists will be added or merged only in this currently connected account.'
+            )) return;
+            $('#pnlImport').addClass('hidden');
+            $('#pnlComplete').addClass('hidden');
+            $('#pnlUpload').removeClass('hidden');
+            compareEverything();
+        });
     }
 
     function collectionProperties(coll) {
@@ -1072,10 +1159,7 @@
     }
 
     function bindControls() {
-        $('#btnImport').click(function () {
-            $('#pnlAction').addClass('hidden');
-            $('#pnlImport').removeClass('hidden');
-        });
+        $('#btnImport, #btnImportWhileWaiting').click(openImportPanel);
         $('#btnExport').click(function () {
             if (!likedSongsState.complete || !playlistLibraryState.complete) {
                 alert('Export blocked: Liked Songs or playlists have not been completely verified. Retry the library load.');
@@ -1125,6 +1209,7 @@
         isImporting = true;
         makingChanges = true;
         resetCounter();
+        importErrors = [];
 
         // Calculate total items for progress tracking
         var totalItems = 0;
@@ -1164,22 +1249,79 @@
                                 // Step 7: Unfollow followed playlists + delete owned playlists
                                 globalStep = "Removing playlists...";
                                 wipePlaylists(function () {
-                                    globalStep = "✅ Account wiped clean!";
-                                    trackTotal = trackStep;
-                                    playlistTotal = playlistStep;
-                                    isImporting = false;
-                                    makingChanges = false;
-                                    collections = {};
-                                    setTimeout(function () {
-                                        alert('Account wiped successfully! You can now import a backup.');
-                                        location.reload();
-                                    }, 1000);
+                                    finishWipe();
                                 });
                             });
                         });
                     });
                 });
             });
+        });
+    }
+
+    function finishWipe() {
+        globalStep = "Wipe requests finished. Verifying the account…";
+        trackTotal = trackStep;
+        playlistTotal = playlistStep;
+        isImporting = false;
+        makingChanges = false;
+        collections = {};
+        $('#pnlUpload').addClass('hidden');
+        $('#pnlLoadingAccount').removeClass('hidden');
+
+        setTimeout(function () {
+            refreshTrackData(function (complete) {
+                if (!complete) {
+                    alert(
+                        'Wipe requests finished, but destination verification is incomplete. '
+                        + incompleteLibraryDetails() + ' '
+                        + 'You can choose your backup file now; the app will verify the destination again before importing.'
+                    );
+                    return;
+                }
+
+                var remainingItems = likedSongsState.count
+                    + playlistLibraryState.playlistCount
+                    + (collections.savedAlbums || []).length
+                    + (collections.savedShows || []).length
+                    + (collections.savedEpisodes || []).length
+                    + (collections.savedAudiobooks || []).length
+                    + (collections.followedArtists || []).length;
+                $('#pnlLoadingAccount').addClass('hidden');
+                $('#pnlAction').removeClass('hidden');
+
+                if (importErrors.length > 0 || remainingItems > 0) {
+                    alert(
+                        'Wipe completed with verification: Spotify still reports '
+                        + remainingItems + ' library item(s), and ' + importErrors.length
+                        + ' request(s) could not be completed. Import remains safe because these destination items were loaded for merging.'
+                    );
+                } else {
+                    alert('Account wiped and verified successfully. You can now import a backup.');
+                }
+            });
+        }, 1000);
+    }
+
+    function wipeDeleteRequest(url, label, callback, attempts) {
+        attempts = attempts || 0;
+        $.ajax({
+            method: "DELETE",
+            url: url,
+            headers: {'Authorization': 'Bearer ' + token}
+        }).done(function () {
+            console.log(label + ' done');
+            callback(true);
+        }).fail(function (jqXHR) {
+            console.warn(label + ' failed:', jqXHR.status, jqXHR.responseText);
+            if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                setTimeout(function () {
+                    wipeDeleteRequest(url, label, callback, attempts + 1);
+                }, getRetryDelay(jqXHR));
+                return;
+            }
+            importErrors.push(label + ' failed (HTTP ' + (jqXHR.status || 'unknown') + ').');
+            callback(false);
         });
     }
 
@@ -1191,18 +1333,16 @@
         });
         var urisParam = uris.map(function (u) { return encodeURIComponent(u); }).join(',');
         trackStep += 1;
-        var lastXHR = null;
         console.log('Removing ' + batch.length + ' ' + type + 's from library');
-        $.ajax({
-            method: "DELETE",
-            url: 'https://api.spotify.com/v1/me/library?uris=' + urisParam,
-            headers: {'Authorization': 'Bearer ' + token},
-            success: function () { console.log('Removed ' + type + ' batch from library'); },
-            error: function (jqXHR) { lastXHR = jqXHR; console.warn('Delete failed for ' + type + ':', jqXHR.status, jqXHR.responseText); }
-        }).always(function () {
-            var delay = getRetryDelay(lastXHR);
-            setTimeout(function () { wipeLibraryItems(type, items, callback); }, delay);
-        });
+        wipeDeleteRequest(
+            'https://api.spotify.com/v1/me/library?uris=' + urisParam,
+            'Remove ' + type + ' batch',
+            function () {
+                setTimeout(function () {
+                    wipeLibraryItems(type, items, callback);
+                }, conf.slowdown_import);
+            }
+        );
     }
 
     function wipeArtists(artists, callback) {
@@ -1211,44 +1351,61 @@
         var uris = batch.map(function (a) { return a.uri || ('spotify:artist:' + a.id); });
         var urisParam = uris.map(function (u) { return encodeURIComponent(u); }).join(',');
         trackStep += 1;
-        var lastXHR = null;
         console.log('Unfollowing ' + batch.length + ' artists via library');
-        $.ajax({
-            method: "DELETE",
-            url: 'https://api.spotify.com/v1/me/library?uris=' + urisParam,
-            headers: {'Authorization': 'Bearer ' + token},
-            success: function () { console.log('Unfollowed artists batch'); },
-            error: function (jqXHR) { lastXHR = jqXHR; console.warn('Unfollow artists failed:', jqXHR.status); }
-        }).always(function () {
-            var delay = getRetryDelay(lastXHR);
-            setTimeout(function () { wipeArtists(artists, callback); }, delay);
-        });
+        wipeDeleteRequest(
+            'https://api.spotify.com/v1/me/library?uris=' + urisParam,
+            'Unfollow artist batch',
+            function () {
+                setTimeout(function () {
+                    wipeArtists(artists, callback);
+                }, conf.slowdown_import);
+            }
+        );
     }
 
     function wipePlaylists(callback) {
-        // Get all playlists and unfollow/delete them
         var allPlaylists = [];
-        loadAllPlaylistsForWipe('https://api.spotify.com/v1/me/playlists?limit=50', allPlaylists, function () {
-            wipePlaylistBatch(allPlaylists, callback);
-        });
+        loadAllPlaylistsForWipe(
+            'https://api.spotify.com/v1/me/playlists?limit=50',
+            allPlaylists,
+            function () {
+                wipePlaylistBatch(allPlaylists, callback);
+            }
+        );
     }
 
-    function loadAllPlaylistsForWipe(url, arr, callback) {
+    function loadAllPlaylistsForWipe(url, arr, callback, attempts) {
+        attempts = attempts || 0;
         $.ajax({
             url: url,
-            headers: {'Authorization': 'Bearer ' + token},
-            success: function (data) {
-                if (!data || !data.items) { callback(); return; }
-                $.each(data.items, function (index, pl) {
-                    arr.push({ id: pl.id, name: pl.name, owned: pl.owner && pl.owner.id === userId });
-                });
-                if (data.next) {
+            headers: {'Authorization': 'Bearer ' + token}
+        }).done(function (data) {
+            if (!data || !data.items) {
+                importErrors.push('Spotify returned invalid playlist data during wipe.');
+                callback();
+                return;
+            }
+            $.each(data.items, function (index, pl) {
+                arr.push({ id: pl.id, name: pl.name, owned: pl.owner && pl.owner.id === userId });
+            });
+            if (data.next) {
+                setTimeout(function () {
                     loadAllPlaylistsForWipe(data.next, arr, callback);
-                } else {
-                    callback();
-                }
-            },
-            error: function () { callback(); }
+                }, conf.slowdown_import);
+            } else {
+                callback();
+            }
+        }).fail(function (jqXHR) {
+            if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                setTimeout(function () {
+                    loadAllPlaylistsForWipe(url, arr, callback, attempts + 1);
+                }, getRetryDelay(jqXHR));
+                return;
+            }
+            importErrors.push(
+                'Playlist discovery failed during wipe (HTTP ' + (jqXHR.status || 'unknown') + ').'
+            );
+            callback();
         });
     }
 
@@ -1260,17 +1417,16 @@
         var action = pl.owned ? 'Deleting' : 'Unfollowing';
         console.log(action + ' playlist:', pl.name);
         globalStep = action + ': ' + pl.name;
-        var lastXHR = null;
-        $.ajax({
-            method: "DELETE",
-            url: 'https://api.spotify.com/v1/me/library?uris=' + encodeURIComponent('spotify:playlist:' + pl.id),
-            headers: {'Authorization': 'Bearer ' + token},
-            success: function () { console.log(action + ' playlist done:', pl.name); },
-            error: function (jqXHR) { lastXHR = jqXHR; console.warn(action + ' playlist failed:', pl.name, jqXHR.status); }
-        }).always(function () {
-            var delay = getRetryDelay(lastXHR);
-            setTimeout(function () { wipePlaylistBatch(playlists, callback); }, delay);
-        });
+        wipeDeleteRequest(
+            'https://api.spotify.com/v1/me/library?uris='
+                + encodeURIComponent('spotify:playlist:' + pl.id),
+            action + ' playlist "' + pl.name + '"',
+            function () {
+                setTimeout(function () {
+                    wipePlaylistBatch(playlists, callback);
+                }, conf.slowdown_import);
+            }
+        );
     }
 
     function handleAuth(accessToken) {
@@ -1367,109 +1523,209 @@
 
     function refreshSavedAlbums(callback) {
         collections.savedAlbums = [];
-        loadLibraryChunks('https://api.spotify.com/v1/me/albums?limit=50', collections.savedAlbums, 'album', callback);
+        loadLibraryChunks(
+            'https://api.spotify.com/v1/me/albums?limit=50',
+            collections.savedAlbums,
+            'album',
+            callback,
+            0,
+            {expectedTotal: null, receivedItems: 0, skipped: 0, error: null}
+        );
     }
 
     function refreshSavedShows(callback) {
         collections.savedShows = [];
-        loadLibraryChunks('https://api.spotify.com/v1/me/shows?limit=50', collections.savedShows, 'show', callback);
+        loadLibraryChunks(
+            'https://api.spotify.com/v1/me/shows?limit=50',
+            collections.savedShows,
+            'show',
+            callback,
+            0,
+            {expectedTotal: null, receivedItems: 0, skipped: 0, error: null}
+        );
     }
 
     function refreshSavedEpisodes(callback) {
         collections.savedEpisodes = [];
-        loadLibraryChunks('https://api.spotify.com/v1/me/episodes?limit=50', collections.savedEpisodes, 'episode', callback);
+        loadLibraryChunks(
+            'https://api.spotify.com/v1/me/episodes?limit=50',
+            collections.savedEpisodes,
+            'episode',
+            callback,
+            0,
+            {expectedTotal: null, receivedItems: 0, skipped: 0, error: null}
+        );
     }
 
     function refreshSavedAudiobooks(callback) {
         collections.savedAudiobooks = [];
-        loadLibraryChunks('https://api.spotify.com/v1/me/audiobooks?limit=50', collections.savedAudiobooks, 'audiobook', callback);
+        loadLibraryChunks(
+            'https://api.spotify.com/v1/me/audiobooks?limit=50',
+            collections.savedAudiobooks,
+            'audiobook',
+            callback,
+            0,
+            {expectedTotal: null, receivedItems: 0, skipped: 0, error: null}
+        );
     }
 
-    function loadLibraryChunks(url, arr, itemKey, callback) {
+    function finishSupplementalLibraryLoad(summary, label, callback) {
+        var state = MySpotBackup.assessSupplementalLibraryLoad(summary, label);
+        if (!state.complete) supplementalLibraryErrors.push(state.message);
+        callback(state.complete);
+    }
+
+    function loadLibraryChunks(url, arr, itemKey, callback, attempts, summary) {
+        attempts = attempts || 0;
         $.ajax({
             url: url,
-            headers: {'Authorization': 'Bearer ' + token},
-            success: function (data) {
-                if (!data || !data.items) { callback(); return; }
-                $.each(data.items, function (index, value) {
-                    var item = value[itemKey] || value;
-                    if (item && item.id) {
-                        arr.push({
-                            id: item.id,
-                            name: item.name,
-                            uri: item.uri || ('spotify:' + itemKey + ':' + item.id)
-                        });
-                    }
-                });
-                console.log('Loaded ' + itemKey + 's so far:', arr.length);
-                if (data.next) {
-                    setTimeout(function () { loadLibraryChunks(data.next, arr, itemKey, callback); }, conf.slowdown_export);
-                } else {
-                    callback();
-                }
-            },
-            error: function (jqXHR) {
-                console.warn('Failed to fetch saved ' + itemKey + 's:', jqXHR.status);
-                callback();
+            headers: {'Authorization': 'Bearer ' + token}
+        }).done(function (data) {
+            if (!data || !Array.isArray(data.items)) {
+                summary.error = {status: 0};
+                finishSupplementalLibraryLoad(summary, 'saved ' + itemKey + 's', callback);
+                return;
             }
+            var reportedTotal = MySpotBackup.reportedSpotifyTotal(data.total);
+            if (summary.expectedTotal === null && reportedTotal !== null) {
+                summary.expectedTotal = reportedTotal;
+            }
+            summary.receivedItems += data.items.length;
+            $.each(data.items, function (index, value) {
+                var item = value[itemKey] || value;
+                if (item && item.id) {
+                    arr.push({
+                        id: item.id,
+                        name: item.name,
+                        uri: item.uri || ('spotify:' + itemKey + ':' + item.id)
+                    });
+                } else {
+                    summary.skipped += 1;
+                }
+            });
+            console.log('Loaded ' + itemKey + 's so far:', arr.length);
+            if (data.next) {
+                setTimeout(function () {
+                    loadLibraryChunks(data.next, arr, itemKey, callback, 0, summary);
+                }, conf.slowdown_export);
+            } else {
+                finishSupplementalLibraryLoad(summary, 'saved ' + itemKey + 's', callback);
+            }
+        }).fail(function (jqXHR) {
+            console.warn('Failed to fetch saved ' + itemKey + 's:', jqXHR.status);
+            if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                setTimeout(function () {
+                    loadLibraryChunks(url, arr, itemKey, callback, attempts + 1, summary);
+                }, getRetryDelay(jqXHR, conf.slowdown_export));
+                return;
+            }
+            summary.error = {status: jqXHR.status};
+            finishSupplementalLibraryLoad(summary, 'saved ' + itemKey + 's', callback);
         });
     }
 
-    function handleLibrarySaveRequests(arr, entityType, callback) {
-        if (arr.length === 0) { callback(); return; }
-        var batch = arr.splice(0, 40);
+    function handleLibrarySaveRequests(arr, entityType, callback, attempts, batch) {
+        attempts = attempts || 0;
+        if (!batch) {
+            if (arr.length === 0) { callback(); return; }
+            batch = arr.splice(0, 40);
+        }
         var uris = batch.map(function (id) { return 'spotify:' + entityType + ':' + id; });
         var urisParam = uris.map(function (u) { return encodeURIComponent(u); }).join(',');
-        var lastXHR = null;
         console.log('Saving ' + batch.length + ' ' + entityType + 's to library');
         $.ajax({
             method: "PUT",
             url: 'https://api.spotify.com/v1/me/library?uris=' + urisParam,
-            headers: {'Authorization': 'Bearer ' + token},
-            success: function () { console.log('Saved ' + entityType + ' batch to library'); },
-            error: function (jqXHR) { lastXHR = jqXHR; console.warn('Failed to save ' + entityType + 's:', jqXHR.status, jqXHR.responseText); }
-        }).always(function () {
+            headers: {'Authorization': 'Bearer ' + token}
+        }).done(function () {
+            console.log('Saved ' + entityType + ' batch to library');
             playlistStep += batch.length;
-            var delay = getRetryDelay(lastXHR);
-            setTimeout(function () { handleLibrarySaveRequests(arr, entityType, callback); }, delay);
+            setTimeout(function () {
+                handleLibrarySaveRequests(arr, entityType, callback);
+            }, conf.slowdown_import);
+        }).fail(function (jqXHR) {
+            console.warn('Failed to save ' + entityType + 's:', jqXHR.status, jqXHR.responseText);
+            if (MySpotBackup.shouldRetrySpotifyPostStatus(jqXHR.status, attempts)) {
+                setTimeout(function () {
+                    handleLibrarySaveRequests(arr, entityType, callback, attempts + 1, batch);
+                }, getRetryDelay(jqXHR));
+                return;
+            }
+            importErrors.push(
+                'Could not restore ' + batch.length + ' ' + entityType
+                + ' item(s) (HTTP ' + (jqXHR.status || 'unknown') + ').'
+            );
+            playlistStep += batch.length;
+            setTimeout(function () {
+                handleLibrarySaveRequests(arr, entityType, callback);
+            }, conf.slowdown_import);
         });
     }
 
     function refreshFollowedArtists(callback) {
         collections.followedArtists = [];
-        loadArtistChunks('https://api.spotify.com/v1/me/following?type=artist&limit=50', collections.followedArtists, callback);
+        loadArtistChunks(
+            'https://api.spotify.com/v1/me/following?type=artist&limit=50',
+            collections.followedArtists,
+            callback,
+            0,
+            {expectedTotal: null, receivedItems: 0, skipped: 0, error: null}
+        );
     }
 
-    function loadArtistChunks(url, arr, callback) {
+    function loadArtistChunks(url, arr, callback, attempts, summary) {
+        attempts = attempts || 0;
         $.ajax({
             url: url,
-            headers: {'Authorization': 'Bearer ' + token},
-            success: function (data) {
-                if (!data || !data.artists) { callback(); return; }
-                var artists = data.artists;
-                $.each(artists.items, function (index, artist) {
+            headers: {'Authorization': 'Bearer ' + token}
+        }).done(function (data) {
+            if (!data || !data.artists || !Array.isArray(data.artists.items)) {
+                summary.error = {status: 0};
+                finishSupplementalLibraryLoad(summary, 'followed artists', callback);
+                return;
+            }
+            var artists = data.artists;
+            var reportedTotal = MySpotBackup.reportedSpotifyTotal(artists.total);
+            if (summary.expectedTotal === null && reportedTotal !== null) {
+                summary.expectedTotal = reportedTotal;
+            }
+            summary.receivedItems += artists.items.length;
+            $.each(artists.items, function (index, artist) {
+                if (artist && artist.id) {
                     arr.push({
                         id: artist.id,
                         name: artist.name,
                         uri: artist.uri || ('spotify:artist:' + artist.id)
                     });
                     console.log('Found followed artist:', artist.name);
-                });
-                console.log('Total followed artists so far:', arr.length);
-                // Cursor-based pagination
-                if (artists.next) {
-                    loadArtistChunks(artists.next, arr, callback);
-                } else if (artists.cursors && artists.cursors.after) {
-                    var nextUrl = 'https://api.spotify.com/v1/me/following?type=artist&limit=50&after=' + artists.cursors.after;
-                    loadArtistChunks(nextUrl, arr, callback);
                 } else {
-                    callback();
+                    summary.skipped += 1;
                 }
-            },
-            error: function (jqXHR) {
-                console.warn('Failed to fetch followed artists:', jqXHR.status);
-                callback();
+            });
+            console.log('Total followed artists so far:', arr.length);
+            if (artists.next) {
+                setTimeout(function () {
+                    loadArtistChunks(artists.next, arr, callback, 0, summary);
+                }, conf.slowdown_export);
+            } else if (artists.cursors && artists.cursors.after) {
+                var nextUrl = 'https://api.spotify.com/v1/me/following?type=artist&limit=50&after='
+                    + artists.cursors.after;
+                setTimeout(function () {
+                    loadArtistChunks(nextUrl, arr, callback, 0, summary);
+                }, conf.slowdown_export);
+            } else {
+                finishSupplementalLibraryLoad(summary, 'followed artists', callback);
             }
+        }).fail(function (jqXHR) {
+            console.warn('Failed to fetch followed artists:', jqXHR.status);
+            if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                setTimeout(function () {
+                    loadArtistChunks(url, arr, callback, attempts + 1, summary);
+                }, getRetryDelay(jqXHR, conf.slowdown_export));
+                return;
+            }
+            summary.error = {status: jqXHR.status};
+            finishSupplementalLibraryLoad(summary, 'followed artists', callback);
         });
     }
 

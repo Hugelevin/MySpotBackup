@@ -75,6 +75,34 @@
         };
     }
 
+    function assessSupplementalLibraryLoad(summary, label) {
+        const expectedTotal = reportedSpotifyTotal(summary.expectedTotal);
+        const receivedItems = Number(summary.receivedItems || 0);
+        const skipped = Number(summary.skipped || 0);
+        let message = '';
+
+        if (summary.error) {
+            message = 'Spotify stopped while loading ' + label
+                + (summary.error.status ? ' (HTTP ' + summary.error.status + ')' : '') + '.';
+        } else if (expectedTotal === null) {
+            message = 'Spotify did not report the total number of ' + label + '.';
+        } else if (receivedItems !== expectedTotal) {
+            message = 'Spotify returned only ' + receivedItems + ' of '
+                + expectedTotal + ' ' + label + '.';
+        } else if (skipped > 0) {
+            message = 'Spotify returned ' + skipped + ' ' + label
+                + ' without a restorable ID and URI.';
+        }
+
+        return {
+            complete: message === '',
+            expectedTotal,
+            receivedItems,
+            skipped,
+            message,
+        };
+    }
+
     function assessPlaylistLibraryLoad(summary) {
         const hasExpectedPlaylists = summary.expectedPlaylists !== null
             && summary.expectedPlaylists !== undefined
@@ -374,11 +402,12 @@
     }
 
     function shouldRetrySpotifyStatus(status, attempts) {
-        return attempts < 3 && (status === 429 || status >= 500);
+        if (status === 429) return attempts < 8;
+        return attempts < 3 && status >= 500;
     }
 
     function shouldRetrySpotifyPostStatus(status, attempts) {
-        return attempts < 3 && status === 429;
+        return attempts < 8 && status === 429;
     }
 
     function queuePlaylistTrack(queue, playlistId, uri) {
@@ -395,6 +424,7 @@
         assessLikedSongsRestore,
         assessLikedSongsLoad,
         assessPlaylistLibraryLoad,
+        assessSupplementalLibraryLoad,
         createLikedSongRestoreBatches,
         createLikedSongVerificationBatches,
         createExportSnapshot,

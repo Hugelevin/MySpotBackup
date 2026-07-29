@@ -70,3 +70,62 @@ test('an import containing only empty playlists still reaches verification and c
         /globalStep = "No new items found in import";[\s\S]*verifyRestoredLikedSongs\(function \(verification\) \{[\s\S]*finishImport\(\)/,
     );
 });
+
+test('a rate-limited library load still exposes backup-file selection while export stays blocked', () => {
+    assert.match(html, /id="btnImportWhileWaiting"/);
+    const refreshTrackData = html.slice(
+        html.indexOf('function refreshTrackData('),
+        html.indexOf('function resetCounter('),
+    );
+    assert.match(
+        refreshTrackData,
+        /incomplete backup cannot be created[\s\S]*\$\('#btnImportWhileWaiting'\)\.removeClass\('hidden'\)/,
+    );
+    assert.match(html, /function ensureDestinationReadyForImport\(/);
+});
+
+test('wipe retries Spotify batches and verifies the destination without a reload burst', () => {
+    const wipeCode = html.slice(
+        html.indexOf('function wipeAccount('),
+        html.indexOf('function handleAuth('),
+    );
+
+    assert.match(wipeCode, /function finishWipe\(/);
+    assert.match(wipeCode, /shouldRetrySpotifyStatus\(jqXHR\.status, attempts\)/);
+    assert.match(wipeCode, /refreshTrackData\(function \(complete\)/);
+    assert.doesNotMatch(wipeCode, /location\.reload\(/);
+    assert.doesNotMatch(wipeCode, /rate-limited the verification/);
+});
+
+test('all saved-library and followed-artist pages retry and block incomplete exports', () => {
+    const ancillaryLoaders = html.slice(
+        html.indexOf('function refreshSavedAlbums('),
+        html.indexOf('function loadTrackChunksWithTimeout('),
+    );
+
+    assert.match(ancillaryLoaders, /function loadLibraryChunks\(url, arr, itemKey, callback, attempts, summary\)/);
+    assert.match(ancillaryLoaders, /function loadArtistChunks\(url, arr, callback, attempts, summary\)/);
+    assert.match(ancillaryLoaders, /shouldRetrySpotifyStatus\(jqXHR\.status, attempts\)/);
+    assert.match(ancillaryLoaders, /supplementalLibraryErrors\.push\(/);
+    assert.match(ancillaryLoaders, /assessSupplementalLibraryLoad\(/);
+});
+
+test('saved-library restore retries a rate-limited batch without silently dropping it', () => {
+    const restoreLoader = html.slice(
+        html.indexOf('function handleLibrarySaveRequests('),
+        html.indexOf('function refreshFollowedArtists('),
+    );
+
+    assert.match(restoreLoader, /shouldRetrySpotifyPostStatus\(jqXHR\.status, attempts\)/);
+    assert.match(restoreLoader, /handleLibrarySaveRequests\(arr, entityType, callback, attempts \+ 1, batch\)/);
+    assert.match(restoreLoader, /importErrors\.push\(/);
+});
+
+test('import readiness requires the entire destination library scan', () => {
+    const readiness = html.slice(
+        html.indexOf('function destinationLibraryReady('),
+        html.indexOf('function startConfirmedImport('),
+    );
+
+    assert.match(readiness, /fullLibraryState\.complete/);
+});
