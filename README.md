@@ -39,14 +39,28 @@ path, and trailing characters.
 
 1. Log in to the source Spotify account.
 2. Select **Export** and save the JSON backup.
-3. Open MySpotBackup in a private/incognito window.
-4. Set the same Client ID and log in to the destination Spotify account.
-5. Select **Import** and choose the JSON backup.
+3. Select **Switch account**. On Spotify's authorization page, choose the
+   destination account; if Spotify still shows the source account, use its
+   **Not you?** or sign-out option first.
+4. Confirm that MySpotBackup displays the destination account as the import
+   target.
+5. Select **Import**, choose the JSON backup, and confirm the target again.
+
+The restore sends Liked Songs from oldest to newest, requests the original
+`added_at` timestamps, and reloads the destination library afterward. The
+completion card reports Liked Song presence and Recently Added order
+separately. Playlist descriptions and public/private status are restored when a
+new playlist is created. An existing exact-name playlist is merged without
+overwriting its description.
 
 Spotify's Development Mode API does not expose the contents of playlists that
 the user does not own or collaborate on. MySpotBackup preserves those playlists
 by following them on restore, but it cannot copy their individual tracks.
-Local-file tracks and original "date added" metadata also cannot be restored.
+Local-file or unavailable tracks cannot be restored. Liked Song dates can be
+restored when Spotify accepts `timestamped_ids`; Spotify orders those timestamps
+at minute-level granularity, so same-minute ties can differ. Playlist item
+dates are archived in the JSON but Spotify's playlist add endpoint does not
+accept historical dates.
 
 ## Run locally
 

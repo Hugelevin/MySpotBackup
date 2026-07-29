@@ -8,6 +8,7 @@ const { createApp } = require('../index');
 const {
     TOKEN_KEY,
     callbackUrl,
+    clearAuthorizationSession,
     completeAuthorization,
     createAuthorizationRequest,
     getAccessToken,
@@ -24,6 +25,14 @@ class MemoryStorage {
 
     getItem(key) {
         return this.values.has(key) ? this.values.get(key) : null;
+    }
+
+    key(index) {
+        return Array.from(this.values.keys())[index] || null;
+    }
+
+    get length() {
+        return this.values.size;
     }
 
     removeItem(key) {
@@ -60,6 +69,38 @@ test('GitHub Pages login sends Spotify response_type=code with PKCE', async () =
     assert.equal(authorizationUrl.searchParams.get('code_challenge_method'), 'S256');
     assert.match(authorizationUrl.searchParams.get('state'), /^[A-Za-z0-9._~-]{32}$/);
     assert.match(authorizationUrl.searchParams.get('code_challenge'), /^[A-Za-z0-9_-]{43}$/);
+});
+
+test('switch-account login forces a fresh Spotify authorization dialog', async () => {
+    const storage = new MemoryStorage();
+    const authorizationUrl = await createAuthorizationRequest({
+        clientId: CLIENT_ID,
+        cryptoImpl: webcrypto,
+        now: () => 1000,
+        pageUrl: PAGE_URL,
+        showDialog: true,
+        storage,
+    });
+
+    assert.equal(new URL(authorizationUrl).searchParams.get('show_dialog'), 'true');
+});
+
+test('switching accounts clears only the Spotify authorization session', () => {
+    const sessionStorage = new MemoryStorage();
+    const storage = new MemoryStorage();
+    sessionStorage.setItem(TOKEN_KEY, 'token');
+    sessionStorage.setItem('unrelated-session-value', 'keep');
+    storage.setItem('myspotbackup:pkce:pending', 'pending');
+    storage.setItem('myspotbackup:client_id', CLIENT_ID);
+    storage.setItem('unrelated-local-value', 'keep');
+
+    clearAuthorizationSession(sessionStorage, storage);
+
+    assert.equal(sessionStorage.getItem(TOKEN_KEY), null);
+    assert.equal(sessionStorage.getItem('unrelated-session-value'), 'keep');
+    assert.equal(storage.getItem('myspotbackup:pkce:pending'), null);
+    assert.equal(storage.getItem('myspotbackup:client_id'), CLIENT_ID);
+    assert.equal(storage.getItem('unrelated-local-value'), 'keep');
 });
 
 test('the static callback exchanges a one-time code and stores the access token', async () => {
