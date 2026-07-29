@@ -19,3 +19,9 @@ test('a no-op import releases the import lock', () => {
     );
 });
 
+test('playlist restore failures are surfaced instead of reporting false success', () => {
+    assert.match(html, /Failed to create playlist/);
+    assert.match(html, /Failed to add a song to a merged playlist/);
+    assert.match(html, /Failed to follow .* playlists/);
+    assert.match(html, /importErrors\.push/);
+});
