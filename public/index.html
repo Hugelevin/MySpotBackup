@@ -53,7 +53,7 @@
                 <div class="client-id-row">
                     <input id="spotifyClientId" type="text" autocomplete="off" spellcheck="false"
                            aria-describedby="clientIdHelp clientIdStatus"
-                           placeholder="Paste the Client ID from your Spotify app">
+                           placeholder="Paste your Client ID">
                     <button id="saveClientId" class="btn btn-secondary" type="button">Save</button>
                 </div>
                 <div id="clientIdHelp">Safe to use in this browser-only PKCE app. Never paste a Client Secret here.</div>
@@ -93,8 +93,8 @@
             </div>
             <div id="loadingTitle" class="status-msg"></div>
             <div class="recovery-actions">
-                <button id="btnRetryLoad" class="btn btn-secondary hidden" type="button">Retry library load</button>
-                <button id="btnImportWhileWaiting" class="btn btn-primary hidden" type="button">Choose backup file</button>
+                <button id="btnRetryLoad" class="btn btn-secondary hidden" type="button">Try again</button>
+                <button id="btnImportWhileWaiting" class="btn btn-primary hidden" type="button">Choose backup now</button>
             </div>
         </div>
 
@@ -105,25 +105,25 @@
                     <div class="icon">
                         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
                     </div>
-                    <div class="action-title">Export</div>
-                    <div class="action-desc">Save to file</div>
+                    <div class="action-title">Back up this account</div>
+                    <div class="action-desc">Save everything to one file</div>
                 </div>
                 <div id="btnImport" class="action-card action-import">
                     <div class="icon">
                         <svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
                     </div>
-                    <div class="action-title">Import</div>
-                    <div class="action-desc">Restore backup</div>
+                    <div class="action-title">Restore a backup</div>
+                    <div class="action-desc">Add a backup to this account</div>
                 </div>
                 <div id="btnWipe" class="action-card action-wipe">
                     <div class="icon">
                         <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                     </div>
-                    <div class="action-title">Wipe Account</div>
-                    <div class="action-desc">Remove everything</div>
+                    <div class="action-title">Erase this account</div>
+                    <div class="action-desc">Advanced: remove everything</div>
                 </div>
             </div>
-            <div class="backup-assurance">
+            <div id="backupAssurance" class="backup-assurance hidden">
                 <strong><span id="readyLikedSongs">0</span> Liked Songs and <span id="readyPlaylists">0</span> playlists verified for export.</strong>
                 <span id="likedSongsNote"></span>
                 <span id="playlistBackupNote"></span>
@@ -259,23 +259,85 @@
     var likedSongDatesPreserved = true;
     var supplementalLibraryErrors = [];
     var fullLibraryState = {complete: false};
+    var destinationLibraryState = {complete: false};
+    var spotifyWaitTimer = null;
+    var spotifyCooldownUntil = 0;
+    var lastLibraryLoadMode = 'export';
+    var lastLibraryLoadCallback = null;
+    var tokenRefreshTimer = null;
+    var tokenRefreshPromise = null;
+    var tokenRefreshController = null;
+    var authorizationGeneration = 0;
 
-    // Get delay for next request — respects Spotify's 429 Retry-After header.
-    function getRetryDelay(jqXHR, defaultDelay) {
-        if (jqXHR && jqXHR.status === 429) {
-            var retryAfter = jqXHR.getResponseHeader('Retry-After');
-            if (retryAfter) {
-                var secs = parseInt(retryAfter, 10);
-                var waitSeconds = Number.isFinite(secs) && secs >= 0 ? secs + 1 : 3;
-                var waitMs = waitSeconds * 1000;
-                console.warn('Rate limited! Waiting ' + waitSeconds + 's (Retry-After: ' + retryAfter + 's)');
-                globalStep = 'Spotify is rate limiting requests. Retrying in ' + waitSeconds + ' seconds…';
-                $('#loadingTitle').removeClass('status-error').text(globalStep);
-                return waitMs;
+    function spotifyReason(jqXHR) {
+        return MySpotBackup.spotifyErrorReason(jqXHR && jqXHR.responseJSON);
+    }
+
+    function shouldRetrySpotifyRequest(jqXHR, attempts, isWrite) {
+        var retryCheck = isWrite
+            ? MySpotBackup.shouldRetrySpotifyPostStatus
+            : MySpotBackup.shouldRetrySpotifyStatus;
+        return retryCheck(jqXHR.status, attempts, spotifyReason(jqXHR));
+    }
+
+    function friendlyWaitTime(milliseconds) {
+        var seconds = Math.max(1, Math.ceil(milliseconds / 1000));
+        if (seconds >= 60) return Math.ceil(seconds / 60) + ' minute(s)';
+        return seconds + ' second(s)';
+    }
+
+    function showSpotifyCooldown(waitMs, reason) {
+        spotifyCooldownUntil = Date.now() + waitMs;
+        if (spotifyWaitTimer) clearInterval(spotifyWaitTimer);
+
+        var updateMessage = function () {
+            var remaining = Math.max(0, spotifyCooldownUntil - Date.now());
+            if (remaining === 0) {
+                clearInterval(spotifyWaitTimer);
+                spotifyWaitTimer = null;
+                globalStep = 'Trying Spotify again now…';
+            } else if (reason === 'QUOTA_EXCEEDED') {
+                globalStep = 'Spotify has paused this developer account. Your progress is safe. '
+                    + 'Keep this tab open — trying again in ' + friendlyWaitTime(remaining) + '.';
+            } else {
+                globalStep = 'Taking a short Spotify break so the limit can clear. '
+                    + 'Trying again in ' + friendlyWaitTime(remaining) + '.';
             }
-            globalStep = 'Spotify is rate limiting requests. Retrying shortly…';
-            $('#loadingTitle').removeClass('status-error').text(globalStep);
-            return Math.max(defaultDelay || conf.slowdown_import, 2000) + 1000;
+            $('#loadingTitle').removeClass('status-error').addClass('status-waiting').text(globalStep);
+        };
+
+        updateMessage();
+        spotifyWaitTimer = setInterval(updateMessage, 1000);
+    }
+
+    function markSpotifyRecovered() {
+        if (spotifyCooldownUntil === 0) return;
+        spotifyCooldownUntil = 0;
+        if (spotifyWaitTimer) clearInterval(spotifyWaitTimer);
+        spotifyWaitTimer = null;
+        globalStep = 'Spotify is ready again. Continuing automatically…';
+        $('#loadingTitle').removeClass('status-error status-waiting').text(globalStep);
+    }
+
+    // Get delay for next request. Quota exhaustion is different from a short
+    // rolling rate limit and must preserve in-progress work for much longer.
+    function getRetryDelay(jqXHR, defaultDelay, attempts) {
+        var status = jqXHR && jqXHR.status ? jqXHR.status : 0;
+        if (status === 429) {
+            var retryAfter = jqXHR.getResponseHeader('Retry-After');
+            var waitMs = MySpotBackup.spotifyRetryDelayMs({
+                status: status,
+                reason: spotifyReason(jqXHR),
+                retryAfterSeconds: retryAfter,
+                attempts: attempts || 0,
+                defaultDelayMs: defaultDelay || conf.slowdown_import
+            });
+            console.warn(
+                'Spotify 429. Waiting ' + waitMs + 'ms. Reason: '
+                + (spotifyReason(jqXHR) || 'rolling rate limit')
+            );
+            showSpotifyCooldown(waitMs, spotifyReason(jqXHR));
+            return waitMs;
         }
         return defaultDelay || conf.slowdown_import;
     }
@@ -288,19 +350,28 @@
         return messages.join(' ') || 'Spotify did not return a complete library snapshot.';
     }
 
+    function setLibraryMessage(message) {
+        if (Date.now() < spotifyCooldownUntil) return;
+        $('#loadingTitle').removeClass('status-error status-waiting').text(message);
+    }
+
     function refreshTrackData(callback) {
         if (!isExporting && !isImporting) {
+            lastLibraryLoadMode = 'export';
+            lastLibraryLoadCallback = callback;
             isExporting = true;
             resetCounter();
             supplementalLibraryErrors = [];
             fullLibraryState.complete = false;
+            destinationLibraryState.complete = false;
             $('#pnlLoadingAccount').removeClass('hidden');
             $('#pnlAction').addClass('hidden');
             $('#btnRetryLoad, #btnImportWhileWaiting').addClass('hidden');
-            $('#loadingTitle').removeClass('status-error');
+            $('#loadingTitle').removeClass('status-error status-waiting');
             $('#loadingLikedSongs').text('--');
-            $('#loadingTitle').html('Loading your library data…');
+            setLibraryMessage('Step 1 of 3: Reading playlists. Large libraries can take a few minutes.');
             refreshPlaylist(function (playlistsComplete) {
+                setLibraryMessage('Step 2 of 3: Reading Liked Songs.');
                 refreshMyMusicTracks(function (likedSongsComplete) {
                     if (!likedSongsComplete || !playlistsComplete) {
                         isExporting = false;
@@ -313,6 +384,8 @@
                         callback(false);
                         return;
                     }
+                    destinationLibraryState.complete = true;
+                    setLibraryMessage('Step 3 of 3: Reading the rest of your saved library.');
                     refreshSavedAlbums(function (albumsComplete) {
                         refreshSavedShows(function (showsComplete) {
                             refreshSavedEpisodes(function (episodesComplete) {
@@ -348,6 +421,7 @@
                                             + ' editable playlist tracks and playlist descriptions verified. '
                                         );
                                         $('#btnRetryLoad, #btnImportWhileWaiting').addClass('hidden');
+                                        $('#backupAssurance').removeClass('hidden');
                                         fullLibraryState.complete = true;
                                         isExporting = false;
                                         callback(true);
@@ -359,6 +433,50 @@
                 });
             });
         }
+    }
+
+    function refreshDestinationData(callback) {
+        if (isExporting || isImporting) return;
+        lastLibraryLoadMode = 'destination';
+        lastLibraryLoadCallback = callback;
+        isExporting = true;
+        resetCounter();
+        destinationLibraryState.complete = false;
+        $('#pnlLoadingAccount').removeClass('hidden');
+        $('#pnlAction').addClass('hidden');
+        $('#btnRetryLoad, #btnImportWhileWaiting').addClass('hidden');
+        setLibraryMessage('Step 1 of 2: Checking playlists before restore.');
+        refreshPlaylist(function (playlistsComplete) {
+            setLibraryMessage('Step 2 of 2: Checking Liked Songs before restore.');
+            refreshMyMusicTracks(function (likedSongsComplete) {
+                isExporting = false;
+                if (!likedSongsComplete || !playlistsComplete) {
+                    $('#loadingTitle').addClass('status-error').text(
+                        incompleteLibraryDetails()
+                        + ' Nothing has been changed. Select Try again when Spotify is ready.'
+                    );
+                    $('#btnRetryLoad, #btnImportWhileWaiting').removeClass('hidden');
+                    callback(false);
+                    return;
+                }
+                destinationLibraryState.complete = true;
+                $('#loadingTitle').removeClass('status-error status-waiting').text(
+                    'Ready to restore. This account was checked safely.'
+                );
+                callback(true);
+            });
+        });
+    }
+
+    function showDashboardChoices() {
+        $('#pnlLoadingAccount').removeClass('hidden');
+        $('#pnlAction').removeClass('hidden');
+        $('#pnlImport, #pnlUpload, #pnlComplete').addClass('hidden');
+        $('#btnRetryLoad, #btnImportWhileWaiting').addClass('hidden');
+        $('#backupAssurance').toggleClass('hidden', !fullLibraryState.complete);
+        $('#loadingTitle').removeClass('status-error status-waiting').text(
+            'What would you like to do? Choose Back up or Restore below.'
+        );
     }
 
     function resetCounter() {
@@ -398,6 +516,96 @@
         return (conf.client_id || localStorage.getItem(MySpotOAuth.CLIENT_ID_KEY) || '').trim();
     }
 
+    function resetLoadedLibrary() {
+        collections = {};
+        likedSongsState = {
+            complete: false,
+            count: 0,
+            skipped: 0,
+            message: 'Liked Songs have not been loaded yet.'
+        };
+        playlistLibraryState = {
+            complete: false,
+            playlistCount: 0,
+            trackCount: 0,
+            expectedTrackItems: null,
+            skippedTrackItems: 0,
+            message: 'Playlists have not been loaded yet.'
+        };
+        supplementalLibraryErrors = [];
+        fullLibraryState.complete = false;
+        destinationLibraryState.complete = false;
+        lastLibraryLoadCallback = null;
+        $('#loadingPlaylists, #loadingTracks, #loadingLikedSongs').text('--');
+        $('#backupAssurance').addClass('hidden');
+    }
+
+    function renewSpotifyToken() {
+        if (tokenRefreshPromise) return tokenRefreshPromise;
+        var refreshGeneration = authorizationGeneration;
+        var refreshController = new AbortController();
+        tokenRefreshController = refreshController;
+        tokenRefreshPromise = MySpotOAuth.refreshAccessToken({
+            fetchImpl: function (url, options) {
+                options.signal = refreshController.signal;
+                return window.fetch(url, options);
+            },
+            sessionStorage: window.sessionStorage,
+            storage: window.localStorage
+        }).then(function (freshAccessToken) {
+            if (refreshGeneration !== authorizationGeneration) {
+                try {
+                    var currentSession = JSON.parse(
+                        window.sessionStorage.getItem(MySpotOAuth.TOKEN_KEY) || '{}'
+                    );
+                    if (currentSession.accessToken === freshAccessToken) {
+                        window.sessionStorage.removeItem(MySpotOAuth.TOKEN_KEY);
+                    }
+                } catch (error) {
+                    window.sessionStorage.removeItem(MySpotOAuth.TOKEN_KEY);
+                }
+                var changedError = new Error('Spotify account changed during login renewal.');
+                changedError.authorizationChanged = true;
+                throw changedError;
+            }
+            token = freshAccessToken;
+            return freshAccessToken;
+        }, function (error) {
+            if (refreshGeneration !== authorizationGeneration) {
+                error.authorizationChanged = true;
+            }
+            throw error;
+        });
+        tokenRefreshPromise = tokenRefreshPromise.finally(function () {
+            if (tokenRefreshController === refreshController) tokenRefreshController = null;
+            tokenRefreshPromise = null;
+        });
+        return tokenRefreshPromise;
+    }
+
+    function scheduleTokenRefresh() {
+        if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
+        tokenRefreshTimer = null;
+        var delay = MySpotOAuth.getTokenRefreshDelay(window.sessionStorage);
+        if (!delay) return;
+
+        tokenRefreshTimer = setTimeout(function refreshLogin() {
+            renewSpotifyToken().then(function () {
+                scheduleTokenRefresh();
+            }).catch(function (error) {
+                if (error.authorizationChanged) return;
+                console.warn('Could not renew Spotify login:', error);
+                if (!window.sessionStorage.getItem(MySpotOAuth.TOKEN_KEY)) {
+                    showAuthMessage(
+                        'Spotify login expired while waiting. Select Login with Spotify, then continue.'
+                    );
+                    return;
+                }
+                tokenRefreshTimer = setTimeout(scheduleTokenRefresh, 60000);
+            });
+        }, delay);
+    }
+
     function updateClientIdStatus() {
         var clientId = currentClientId();
         $('#clientIdStatus').text(
@@ -426,10 +634,14 @@
                 + 'In the Spotify Developer Dashboard, open this app → Settings → User Management '
                 + 'and add the exact Spotify account you just logged in with. The app owner must have Premium.';
         } else if (status === 401) {
+            if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
+            tokenRefreshTimer = null;
             window.sessionStorage.removeItem(MySpotOAuth.TOKEN_KEY);
             message = 'The Spotify login token is invalid or expired (401). Select Login with Spotify and try again.';
         } else if (status === 429) {
-            message = 'Spotify temporarily refused the request because the app quota or rate limit was reached (429). Try again later.';
+            message = spotifyReason(jqXHR) === 'QUOTA_EXCEEDED'
+                ? 'Spotify paused the developer account quota. Creating another Client ID under the same developer account will not help. No Spotify data was changed.'
+                : 'Spotify needs a short break before this app can continue. No Spotify data was changed.';
         } else if (status === 0) {
             message = 'The browser could not reach Spotify Web API. Check your connection or privacy extensions, then try again.';
         } else {
@@ -493,6 +705,10 @@
             'Disconnect from "' + name + '" and open Spotify login?\n\n'
             + 'This only clears MySpotBackup’s login token. It will not change the previous Spotify account.'
         )) return;
+        authorizationGeneration += 1;
+        if (tokenRefreshController) tokenRefreshController.abort();
+        if (tokenRefreshTimer) clearTimeout(tokenRefreshTimer);
+        tokenRefreshTimer = null;
         MySpotOAuth.clearAuthorizationSession(window.sessionStorage, window.localStorage);
         token = null;
         login(true);
@@ -552,13 +768,14 @@
 
     function cancelImportSelection() {
         importColl = undefined;
+        if (lastLibraryLoadMode === 'destination') lastLibraryLoadCallback = null;
         $('#fileImport').val('');
         $('#pnlFileInfo').addClass('hidden');
         $('#pnlFile').removeClass('hidden');
     }
 
     function destinationLibraryReady() {
-        return fullLibraryState.complete
+        return destinationLibraryState.complete
             && likedSongsState.complete
             && playlistLibraryState.complete;
     }
@@ -573,7 +790,7 @@
                     : 'Destination verification is incomplete. Start Import will retry it before changing Spotify.'
             );
         $('#btnStartImport').text(
-            ready ? 'Import into this account' : 'Verify destination & import'
+            ready ? 'Restore into this account' : 'Check account, then restore'
         );
     }
 
@@ -594,7 +811,7 @@
         $('#loadingTitle').removeClass('status-error').text(
             'Verifying the destination account before import…'
         );
-        refreshTrackData(function (complete) {
+        refreshDestinationData(function (complete) {
             $('#pnlImport').removeClass('hidden');
             if (complete) $('#pnlLoadingAccount').addClass('hidden');
             updateImportReadiness();
@@ -610,8 +827,13 @@
 
     function startConfirmedImport() {
         if (typeof importColl === 'undefined') return;
+        var selectedImport = importColl;
         ensureDestinationReadyForImport(function (ready) {
             if (!ready) return;
+            if (importColl !== selectedImport) {
+                alert('The selected backup changed. Select Start again for the backup you want to restore.');
+                return;
+            }
             if (!confirm(
                 'Import this backup into "' + name + '"?\n\n'
                 + 'Songs and playlists will be added or merged only in this currently connected account.'
@@ -620,6 +842,38 @@
             $('#pnlComplete').addClass('hidden');
             $('#pnlUpload').removeClass('hidden');
             compareEverything();
+        });
+    }
+
+    function downloadVerifiedBackup() {
+        try {
+            var snapshot = MySpotBackup.createExportSnapshot(
+                collections,
+                likedSongsState,
+                new Date().toISOString(),
+                playlistLibraryState
+            );
+            var json = JSON.stringify(snapshot);
+            var d = new Date();
+            var time = '@' + d.getFullYear() + '_' + (d.getMonth() + 1) + '_' + d.getDate();
+            download(name + time + '.json', json);
+            $('#loadingTitle').removeClass('status-error status-waiting').text(
+                'Backup downloaded. Keep the JSON file somewhere safe.'
+            );
+        } catch (error) {
+            alert('Backup could not be created: ' + error.message);
+        }
+    }
+
+    function startExport() {
+        if (fullLibraryState.complete) {
+            downloadVerifiedBackup();
+            return;
+        }
+        refreshTrackData(function (complete) {
+            if (!complete) return;
+            $('#pnlAction').removeClass('hidden');
+            downloadVerifiedBackup();
         });
     }
 
@@ -650,6 +904,7 @@
         if (!isImporting && !isExporting) {
             isImporting = true;
             makingChanges = true;
+            fullLibraryState.complete = false;
             resetCounter();
             savedQueue = [];
             playlistQueue = [];
@@ -729,6 +984,8 @@
         playlistTotal = playlistStep;
         isImporting = false;
         makingChanges = false;
+        fullLibraryState.complete = false;
+        destinationLibraryState.complete = false;
         var verification = likedSongRestoreVerification || {
             expectedCount: (importColl.saved || []).length,
             presentCount: 0,
@@ -890,10 +1147,10 @@
                     handleFollowRequests(arr, callback);
                 }, conf.slowdown_import);
             }).fail(function (jqXHR) {
-                if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                     setTimeout(function () {
                         sendBatch(attempts + 1);
-                    }, getRetryDelay(jqXHR));
+                    }, getRetryDelay(jqXHR, conf.slowdown_import, attempts));
                 } else {
                     importErrors.push(
                         'Failed to follow ' + batch.length + ' playlists (HTTP ' + jqXHR.status + ').'
@@ -901,7 +1158,7 @@
                     playlistStep += batch.length;
                     setTimeout(function () {
                         handleFollowRequests(arr, callback);
-                    }, getRetryDelay(jqXHR));
+                    }, conf.slowdown_import);
                 }
             });
         };
@@ -926,10 +1183,10 @@
                     handleArtistFollowRequests(arr, callback);
                 }, conf.slowdown_import);
             }).fail(function (jqXHR) {
-                if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                     setTimeout(function () {
                         sendBatch(attempts + 1);
-                    }, getRetryDelay(jqXHR));
+                    }, getRetryDelay(jqXHR, conf.slowdown_import, attempts));
                 } else {
                     importErrors.push(
                         'Failed to follow ' + batch.length + ' artists (HTTP ' + jqXHR.status + ').'
@@ -937,7 +1194,7 @@
                     playlistStep += batch.length;
                     setTimeout(function () {
                         handleArtistFollowRequests(arr, callback);
-                    }, getRetryDelay(jqXHR));
+                    }, conf.slowdown_import);
                 }
             });
         };
@@ -1006,10 +1263,10 @@
                 callback(true, created);
             },
             error: function (jqXHR) {
-                if (MySpotBackup.shouldRetrySpotifyPostStatus(jqXHR.status, attempts)) {
+                if (shouldRetrySpotifyRequest(jqXHR, attempts, true)) {
                     setTimeout(function () {
                         makeSurePlaylistExists(playlistSource, callback, attempts + 1);
-                    }, getRetryDelay(jqXHR));
+                    }, getRetryDelay(jqXHR, conf.slowdown_import, attempts));
                 } else {
                     importErrors.push(
                         'Failed to create playlist "' + name + '" (HTTP ' + jqXHR.status + ').'
@@ -1041,8 +1298,8 @@
         globalStep = 'Restoring ' + tracks.length + ' Liked Songs'
             + (restoreBatch.mode === 'timestamped' ? ' with original dates' : '');
 
-        var continueRestore = function (jqXHR) {
-            var delay = getRetryDelay(jqXHR);
+        var continueRestore = function (jqXHR, attempts) {
+            var delay = getRetryDelay(jqXHR, conf.slowdown_import, attempts);
             setTimeout(function () { handleSavedRequests(arr, callback); }, delay);
         };
 
@@ -1058,7 +1315,7 @@
                 error: function (jqXHR) {
                     libraryXHR = jqXHR;
                     var attempts = restoreBatch.attempts || 0;
-                    if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                    if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                         restoreBatch.attempts = attempts + 1;
                         arr.unshift(restoreBatch);
                     } else {
@@ -1069,7 +1326,7 @@
                     }
                 }
             }).always(function () {
-                continueRestore(libraryXHR);
+                continueRestore(libraryXHR, restoreBatch.attempts || 0);
             });
         };
 
@@ -1089,10 +1346,10 @@
                 },
                 error: function (jqXHR) {
                     var attempts = restoreBatch.attempts || 0;
-                    if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                    if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                         restoreBatch.attempts = attempts + 1;
                         arr.unshift(restoreBatch);
-                        continueRestore(jqXHR);
+                        continueRestore(jqXHR, attempts);
                     } else {
                         // Spotify recommends /me/library; fall back if timestamp restoration is unavailable.
                         likedSongDatesPreserved = false;
@@ -1113,7 +1370,7 @@
         var request = arr.pop();
         if (request) {
             if (request.attempts === 0) trackStep += 1;
-            var lastXHR = null;
+            var retryDelay = conf.slowdown_import;
             $.ajax({
                 method: "POST",
                 url: 'https://api.spotify.com/v1/playlists/' + request.playlistId
@@ -1122,8 +1379,12 @@
                 headers: {'Authorization': 'Bearer ' + token},
                 success: function () {},
                 error: function (jqXHR) {
-                    lastXHR = jqXHR;
-                    if (MySpotBackup.shouldRetrySpotifyPostStatus(jqXHR.status, request.attempts)) {
+                    if (shouldRetrySpotifyRequest(jqXHR, request.attempts, true)) {
+                        retryDelay = getRetryDelay(
+                            jqXHR,
+                            conf.slowdown_import,
+                            request.attempts
+                        );
                         request.attempts += 1;
                         arr.push(request);
                     } else {
@@ -1133,8 +1394,9 @@
                     }
                 }
             }).always(function () {
-                var delay = getRetryDelay(lastXHR);
-                setTimeout(function () { handlePlaylistRequests(arr, callback); }, delay);
+                setTimeout(function () {
+                    handlePlaylistRequests(arr, callback);
+                }, retryDelay);
             });
         } else { callback(); }
     }
@@ -1160,46 +1422,36 @@
 
     function bindControls() {
         $('#btnImport, #btnImportWhileWaiting').click(openImportPanel);
-        $('#btnExport').click(function () {
-            if (!likedSongsState.complete || !playlistLibraryState.complete) {
-                alert('Export blocked: Liked Songs or playlists have not been completely verified. Retry the library load.');
-                return;
-            }
-            try {
-                var snapshot = MySpotBackup.createExportSnapshot(
-                    collections,
-                    likedSongsState,
-                    new Date().toISOString(),
-                    playlistLibraryState
-                );
-                var json = JSON.stringify(snapshot);
-                var d = new Date();
-                var time = '@' + d.getFullYear() + '_' + (d.getMonth() + 1) + '_' + d.getDate();
-                download(name + time + '.json', json);
-            } catch (error) {
-                alert('Export blocked: ' + error.message);
-            }
-        });
+        $('#btnExport').click(startExport);
         $('#btnRetryLoad').click(function () {
-            refreshTrackData(function (complete) {
-                if (complete) $('#pnlAction').removeClass('hidden');
-            });
+            var loader = lastLibraryLoadMode === 'destination'
+                ? refreshDestinationData
+                : refreshTrackData;
+            loader(lastLibraryLoadCallback || function () {});
         });
         $('#btnStartImport').click(startConfirmedImport);
         $('#btnCancelImport').click(cancelImportSelection);
         $('#btnSwitchAccount, #btnSwitchAfterImport').click(switchAccount);
         $('#btnBackToDashboard').click(function () {
             cancelImportSelection();
-            $('#pnlComplete, #pnlImport, #pnlAction').addClass('hidden');
-            $('#pnlLoadingAccount').removeClass('hidden');
-            refreshTrackData(function (complete) {
-                if (complete) $('#pnlAction').removeClass('hidden');
-            });
+            showDashboardChoices();
         });
         $('#btnWipe').click(function () {
-            if (!confirm('⚠️ WARNING: This will permanently delete ALL data from this Spotify account:\n\n• All saved tracks\n• All saved albums\n• All saved shows & episodes\n• All saved audiobooks\n• All owned playlists (DELETED)\n• All followed playlists (unfollowed)\n• All followed artists (unfollowed)\n\nThis CANNOT be undone. Are you sure?')) return;
-            if (!confirm('FINAL CONFIRMATION: Type-check — are you absolutely sure you want to wipe this account clean?')) return;
-            wipeAccount();
+            var confirmAndWipe = function () {
+                if (!confirm('WARNING: This will permanently remove everything from this Spotify account. Continue?')) return;
+                if (!confirm('Final check: erase this account now?')) return;
+                wipeAccount();
+            };
+            if (!fullLibraryState.complete) {
+                $('#loadingTitle').removeClass('status-error').text(
+                    'Checking the whole account before erasing anything…'
+                );
+                refreshTrackData(function (complete) {
+                    if (complete) confirmAndWipe();
+                });
+                return;
+            }
+            confirmAndWipe();
         });
         $('#fileImport').change(readFile);
     }
@@ -1314,10 +1566,10 @@
             callback(true);
         }).fail(function (jqXHR) {
             console.warn(label + ' failed:', jqXHR.status, jqXHR.responseText);
-            if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+            if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                 setTimeout(function () {
                     wipeDeleteRequest(url, label, callback, attempts + 1);
-                }, getRetryDelay(jqXHR));
+                }, getRetryDelay(jqXHR, conf.slowdown_import, attempts));
                 return;
             }
             importErrors.push(label + ' failed (HTTP ' + (jqXHR.status || 'unknown') + ').');
@@ -1396,10 +1648,10 @@
                 callback();
             }
         }).fail(function (jqXHR) {
-            if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+            if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                 setTimeout(function () {
                     loadAllPlaylistsForWipe(url, arr, callback, attempts + 1);
-                }, getRetryDelay(jqXHR));
+                }, getRetryDelay(jqXHR, conf.slowdown_export, attempts));
                 return;
             }
             importErrors.push(
@@ -1429,32 +1681,79 @@
         );
     }
 
-    function handleAuth(accessToken) {
-        token = accessToken;
+    function handleAuth(accessToken, attempts, refreshedAfterUnauthorized) {
+        attempts = attempts || 0;
+        if (accessToken) token = accessToken;
+        scheduleTokenRefresh();
         $('#authError').addClass('hidden').text('');
-        $.ajax({
-            url: 'https://api.spotify.com/v1/me',
-            headers: {'Authorization': 'Bearer ' + accessToken},
-            success: function (response) {
-                var user_id = String(response.id || response.account_id || '').toLowerCase();
-                if (!user_id) {
-                    showAuthMessage('Spotify returned a profile without a usable account ID. Please log in again.');
-                    return;
+        var beginProfileRequest = function () {
+            $.ajax({
+                url: 'https://api.spotify.com/v1/me',
+                headers: {'Authorization': 'Bearer ' + token},
+                success: function (response) {
+                    var user_id = String(response.id || response.account_id || '').toLowerCase();
+                    if (!user_id) {
+                        showAuthMessage('Spotify returned a profile without a usable account ID. Please log in again.');
+                        return;
+                    }
+                    userId = String(response.id || response.account_id);
+                    name = response.display_name || user_id;
+                    $('#userName').text(name);
+                    $('#avatarLetter').text(name.charAt(0).toUpperCase());
+                    $('#importTargetName').text(name);
+                    $('#pnlLoggedOut').addClass('hidden');
+                    resetLoadedLibrary();
+                    showDashboardChoices();
+                },
+                error: function (jqXHR) {
+                    if (jqXHR.status === 401
+                        && !refreshedAfterUnauthorized
+                        && MySpotOAuth.getTokenRefreshDelay(window.sessionStorage)) {
+                        renewSpotifyToken().then(function (freshAccessToken) {
+                            handleAuth(freshAccessToken, attempts, true);
+                        }).catch(function (error) {
+                            if (error.authorizationChanged) return;
+                            showAuthMessage(
+                                'Spotify login expired while waiting. Select Login with Spotify, then continue.'
+                            );
+                        });
+                        return;
+                    }
+                    if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
+                        $('#pnlLoggedOut').addClass('hidden');
+                        $('#pnlLoadingAccount').removeClass('hidden');
+                        $('#userName').text('Connecting…');
+                        setTimeout(function () {
+                            handleAuth(null, attempts + 1, refreshedAfterUnauthorized);
+                        }, getRetryDelay(jqXHR, conf.slowdown_export, attempts));
+                        return;
+                    }
+                    showAuthError(jqXHR);
                 }
-                userId = String(response.id || response.account_id);
-                name = response.display_name || user_id;
-                $('#userName').text(name);
-                $('#avatarLetter').text(name.charAt(0).toUpperCase());
-                $('#importTargetName').text(name);
-                $('#pnlLoggedOut').addClass('hidden');
-                refreshTrackData(function (complete) {
-                    if (complete) $('#pnlAction').removeClass('hidden');
-                });
-            },
-            error: function (jqXHR) {
-                showAuthError(jqXHR);
+            });
+        };
+
+        var savedAccessToken = MySpotOAuth.getAccessToken(window.sessionStorage);
+        if (savedAccessToken) {
+            token = savedAccessToken;
+            beginProfileRequest();
+        } else if (MySpotOAuth.getTokenRefreshDelay(window.sessionStorage)) {
+            renewSpotifyToken().then(function () {
+                scheduleTokenRefresh();
+                beginProfileRequest();
+            }).catch(function (error) {
+                if (error.authorizationChanged) return;
+                showAuthMessage(
+                    'Spotify login expired while waiting. Select Login with Spotify, then continue.'
+                );
+            });
+        } else {
+            if (!token) {
+                showAuthMessage('Spotify login is missing. Select Login with Spotify and try again.');
+                return;
             }
-        });
+            beginProfileRequest();
+        }
     }
 
     function refreshMyMusicTracks(callback) {
@@ -1509,12 +1808,15 @@
                 }
             },
             error: function (jqXHR) {
-                if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                     setTimeout(function () {
                         loadSavedTrackChunks(url, arr, summary, callback, attempts + 1);
-                    }, getRetryDelay(jqXHR, conf.slowdown_export));
+                    }, getRetryDelay(jqXHR, conf.slowdown_export, attempts));
                 } else {
-                    summary.error = {status: jqXHR.status};
+                    summary.error = {
+                        status: jqXHR.status,
+                        reason: spotifyReason(jqXHR)
+                    };
                     callback();
                 }
             }
@@ -1613,13 +1915,16 @@
             }
         }).fail(function (jqXHR) {
             console.warn('Failed to fetch saved ' + itemKey + 's:', jqXHR.status);
-            if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+            if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                 setTimeout(function () {
                     loadLibraryChunks(url, arr, itemKey, callback, attempts + 1, summary);
-                }, getRetryDelay(jqXHR, conf.slowdown_export));
+                }, getRetryDelay(jqXHR, conf.slowdown_export, attempts));
                 return;
             }
-            summary.error = {status: jqXHR.status};
+            summary.error = {
+                status: jqXHR.status,
+                reason: spotifyReason(jqXHR)
+            };
             finishSupplementalLibraryLoad(summary, 'saved ' + itemKey + 's', callback);
         });
     }
@@ -1645,10 +1950,10 @@
             }, conf.slowdown_import);
         }).fail(function (jqXHR) {
             console.warn('Failed to save ' + entityType + 's:', jqXHR.status, jqXHR.responseText);
-            if (MySpotBackup.shouldRetrySpotifyPostStatus(jqXHR.status, attempts)) {
+            if (shouldRetrySpotifyRequest(jqXHR, attempts, true)) {
                 setTimeout(function () {
                     handleLibrarySaveRequests(arr, entityType, callback, attempts + 1, batch);
-                }, getRetryDelay(jqXHR));
+                }, getRetryDelay(jqXHR, conf.slowdown_import, attempts));
                 return;
             }
             importErrors.push(
@@ -1718,13 +2023,16 @@
             }
         }).fail(function (jqXHR) {
             console.warn('Failed to fetch followed artists:', jqXHR.status);
-            if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+            if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                 setTimeout(function () {
                     loadArtistChunks(url, arr, callback, attempts + 1, summary);
-                }, getRetryDelay(jqXHR, conf.slowdown_export));
+                }, getRetryDelay(jqXHR, conf.slowdown_export, attempts));
                 return;
             }
-            summary.error = {status: jqXHR.status};
+            summary.error = {
+                status: jqXHR.status,
+                reason: spotifyReason(jqXHR)
+            };
             finishSupplementalLibraryLoad(summary, 'followed artists', callback);
         });
     }
@@ -1775,12 +2083,15 @@
                 else { callback(); }
             },
             error: function (jqXHR) {
-                if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                     setTimeout(function () {
                         loadTrackChunks(url, arr, summary, callback, attempts + 1);
-                    }, getRetryDelay(jqXHR, conf.slowdown_export));
+                    }, getRetryDelay(jqXHR, conf.slowdown_export, attempts));
                 } else {
-                    summary.error = {status: jqXHR.status};
+                    summary.error = {
+                        status: jqXHR.status,
+                        reason: spotifyReason(jqXHR)
+                    };
                     callback();
                 }
             }
@@ -1872,12 +2183,15 @@
                 else { callback(); }
             },
             error: function (jqXHR) {
-                if (MySpotBackup.shouldRetrySpotifyStatus(jqXHR.status, attempts)) {
+                if (shouldRetrySpotifyRequest(jqXHR, attempts, false)) {
                     setTimeout(function () {
                         loadPlaylistChunks(url, arr, summary, callback, attempts + 1);
-                    }, getRetryDelay(jqXHR, conf.slowdown_export));
+                    }, getRetryDelay(jqXHR, conf.slowdown_export, attempts));
                 } else {
-                    summary.error = {status: jqXHR.status};
+                    summary.error = {
+                        status: jqXHR.status,
+                        reason: spotifyReason(jqXHR)
+                    };
                     callback();
                 }
             }
@@ -1918,11 +2232,27 @@
         $('#saveClientId').click(saveClientId);
         $('#forgetClientId').click(forgetClientId);
         bindControls();
+        $(document).ajaxSuccess(function (event, jqXHR, settings) {
+            if (settings && /^https:\/\/api\.spotify\.com\//.test(settings.url || '')) {
+                markSpotifyRecovered();
+            }
+        });
         refreshProgress();
         updateClientIdStatus();
         var savedAccessToken = MySpotOAuth.getAccessToken(window.sessionStorage);
         if (savedAccessToken) {
             handleAuth(savedAccessToken);
+        } else if (MySpotOAuth.getTokenRefreshDelay(window.sessionStorage)) {
+            $('#pnlLoggedOut').addClass('hidden');
+            $('#pnlLoadingAccount').removeClass('hidden');
+            $('#loadingTitle').addClass('status-waiting').text('Keeping your Spotify login active…');
+            MySpotOAuth.refreshAccessToken({
+                fetchImpl: window.fetch.bind(window),
+                sessionStorage: window.sessionStorage,
+                storage: window.localStorage
+            }).then(handleAuth).catch(function () {
+                showAuthMessage('Spotify login expired. Select Login with Spotify and try again.');
+            });
         } else if (new URLSearchParams(window.location.search).get('authenticated') === '1') {
             showAuthMessage(
                 'Spotify returned to MySpotBackup, but the login token was not available in this tab. '

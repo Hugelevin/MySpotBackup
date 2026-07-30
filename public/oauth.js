@@ -145,6 +145,7 @@
 
         options.sessionStorage.setItem(TOKEN_KEY, JSON.stringify({
             accessToken: body.access_token,
+            refreshToken: body.refresh_token || '',
             expiresAt: now() + (Number(body.expires_in || 3600) * 1000),
         }));
         options.storage.setItem(CLIENT_ID_KEY, pending.clientId);
@@ -159,7 +160,7 @@
         try {
             const saved = JSON.parse(rawToken);
             if (!saved.accessToken || saved.expiresAt <= now() + 5000) {
-                sessionStorage.removeItem(TOKEN_KEY);
+                if (!saved.refreshToken) sessionStorage.removeItem(TOKEN_KEY);
                 return null;
             }
             return saved.accessToken;
@@ -167,6 +168,62 @@
             sessionStorage.removeItem(TOKEN_KEY);
             return null;
         }
+    }
+
+    function getTokenRefreshDelay(sessionStorage, now = Date.now) {
+        const rawToken = sessionStorage.getItem(TOKEN_KEY);
+        if (!rawToken) return 0;
+        try {
+            const saved = JSON.parse(rawToken);
+            if (!saved.refreshToken || !Number.isFinite(Number(saved.expiresAt))) return 0;
+            return Math.max(1000, Number(saved.expiresAt) - now() - (5 * 60 * 1000));
+        } catch {
+            return 0;
+        }
+    }
+
+    async function refreshAccessToken(options) {
+        const rawToken = options.sessionStorage.getItem(TOKEN_KEY);
+        if (!rawToken) throw new Error('Spotify login is missing. Log in again.');
+
+        let saved;
+        try {
+            saved = JSON.parse(rawToken);
+        } catch {
+            options.sessionStorage.removeItem(TOKEN_KEY);
+            throw new Error('Spotify login is invalid. Log in again.');
+        }
+        if (!saved.refreshToken) {
+            options.sessionStorage.removeItem(TOKEN_KEY);
+            throw new Error('Spotify login cannot be refreshed. Log in again.');
+        }
+
+        const clientId = validateClientId(options.storage.getItem(CLIENT_ID_KEY));
+        const response = await options.fetchImpl(TOKEN_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: new URLSearchParams({
+                grant_type: 'refresh_token',
+                refresh_token: saved.refreshToken,
+                client_id: clientId,
+            }),
+        });
+        const body = await response.json();
+        if (!response.ok || !body.access_token) {
+            if (body.error === 'invalid_grant') options.sessionStorage.removeItem(TOKEN_KEY);
+            throw new Error(
+                body.error_description || body.error
+                || `Spotify token refresh failed (${response.status}).`
+            );
+        }
+
+        const now = options.now || Date.now;
+        options.sessionStorage.setItem(TOKEN_KEY, JSON.stringify({
+            accessToken: body.access_token,
+            refreshToken: body.refresh_token || saved.refreshToken,
+            expiresAt: now() + (Number(body.expires_in || 3600) * 1000),
+        }));
+        return body.access_token;
     }
 
     return {
@@ -177,6 +234,8 @@
         completeAuthorization,
         createAuthorizationRequest,
         getAccessToken,
+        getTokenRefreshDelay,
+        refreshAccessToken,
         validateClientId,
     };
 });

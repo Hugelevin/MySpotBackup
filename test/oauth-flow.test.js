@@ -12,6 +12,8 @@ const {
     completeAuthorization,
     createAuthorizationRequest,
     getAccessToken,
+    getTokenRefreshDelay,
+    refreshAccessToken,
     validateClientId,
 } = require('../public/oauth');
 
@@ -116,7 +118,11 @@ test('the static callback exchanges a one-time code and stores the access token'
             return {
                 ok: true,
                 status: 200,
-                json: async () => ({ access_token: 'access-token', expires_in: 3600 }),
+                json: async () => ({
+                    access_token: 'access-token',
+                    refresh_token: 'refresh-token',
+                    expires_in: 3600,
+                }),
             };
         },
         now: () => 2000,
@@ -145,6 +151,46 @@ test('the static callback exchanges a one-time code and stores the access token'
         }),
         /missing or invalid/,
     );
+});
+
+test('PKCE refresh keeps a long-running quota recovery logged in', async () => {
+    const sessionStorage = new MemoryStorage();
+    const storage = new MemoryStorage();
+    storage.setItem('myspotbackup:client_id', CLIENT_ID);
+    sessionStorage.setItem(TOKEN_KEY, JSON.stringify({
+        accessToken: 'expired-access-token',
+        refreshToken: 'refresh-token',
+        expiresAt: 1000,
+    }));
+    let tokenRequest;
+
+    const accessToken = await refreshAccessToken({
+        fetchImpl: async (url, options) => {
+            tokenRequest = {url, body: new URLSearchParams(options.body)};
+            return {
+                ok: true,
+                status: 200,
+                json: async () => ({
+                    access_token: 'new-access-token',
+                    expires_in: 3600,
+                }),
+            };
+        },
+        now: () => 2000,
+        sessionStorage,
+        storage,
+    });
+
+    assert.equal(accessToken, 'new-access-token');
+    assert.equal(tokenRequest.body.get('grant_type'), 'refresh_token');
+    assert.equal(tokenRequest.body.get('refresh_token'), 'refresh-token');
+    assert.equal(tokenRequest.body.get('client_id'), CLIENT_ID);
+    assert.equal(getAccessToken(sessionStorage, () => 2000), 'new-access-token');
+    assert.equal(
+        JSON.parse(sessionStorage.getItem(TOKEN_KEY)).refreshToken,
+        'refresh-token',
+    );
+    assert.equal(getTokenRefreshDelay(sessionStorage, () => 2000), 55 * 60 * 1000);
 });
 
 test('client IDs are validated without requiring a client secret', () => {
