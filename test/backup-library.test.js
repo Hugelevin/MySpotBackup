@@ -410,17 +410,91 @@ test('Liked Songs verification checks every unique restorable track in API-sized
 
 test('temporary Spotify failures are retried but permanent failures are not', () => {
     assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 0), true);
-    assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 7), true);
-    assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 8), false);
+    assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 11), true);
+    assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 12), false);
     assert.equal(BackupTools.shouldRetrySpotifyStatus(503, 2), true);
     assert.equal(BackupTools.shouldRetrySpotifyStatus(503, 3), false);
     assert.equal(BackupTools.shouldRetrySpotifyStatus(403, 0), false);
 });
 
+test('Spotify quota exhaustion is distinguished from a short rolling rate limit', () => {
+    const quotaResponse = {
+        error: {
+            status: 429,
+            message: 'Too many requests',
+            reason: 'QUOTA_EXCEEDED',
+        },
+    };
+
+    assert.equal(BackupTools.spotifyErrorReason(quotaResponse), 'QUOTA_EXCEEDED');
+    assert.equal(
+        BackupTools.shouldRetrySpotifyStatus(429, 47, 'QUOTA_EXCEEDED'),
+        true,
+    );
+    assert.equal(
+        BackupTools.shouldRetrySpotifyStatus(429, 48, 'QUOTA_EXCEEDED'),
+        false,
+    );
+    assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 11, ''), true);
+    assert.equal(BackupTools.shouldRetrySpotifyStatus(429, 12, ''), false);
+    assert.match(
+        BackupTools.assessLikedSongsLoad({
+            expectedTotal: 10,
+            receivedItems: 5,
+            savedTracks: new Array(5),
+            skipped: 0,
+            error: {status: 429, reason: 'QUOTA_EXCEEDED'},
+        }).message,
+        /developer quota/,
+    );
+});
+
+test('Spotify retry delays cool down quota and no-header limits conservatively', () => {
+    assert.equal(
+        BackupTools.spotifyRetryDelayMs({
+            status: 429,
+            reason: 'QUOTA_EXCEEDED',
+            retryAfterSeconds: null,
+            attempts: 0,
+            defaultDelayMs: 100,
+        }),
+        30 * 60 * 1000,
+    );
+    assert.equal(
+        BackupTools.spotifyRetryDelayMs({
+            status: 429,
+            reason: 'QUOTA_EXCEEDED',
+            retryAfterSeconds: 3600,
+            attempts: 0,
+            defaultDelayMs: 100,
+        }),
+        3_601_000,
+    );
+    assert.ok(
+        BackupTools.spotifyRetryDelayMs({
+            status: 429,
+            reason: '',
+            retryAfterSeconds: null,
+            attempts: 0,
+            defaultDelayMs: 100,
+        }) >= 31_000,
+    );
+    assert.equal(
+        BackupTools.spotifyRetryDelayMs({
+            status: 429,
+            reason: '',
+            retryAfterSeconds: 12,
+            attempts: 0,
+            defaultDelayMs: 100,
+        }),
+        13_000,
+    );
+});
+
 test('non-idempotent playlist writes retry rate limits but not ambiguous server errors', () => {
     assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 0), true);
-    assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 7), true);
-    assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 8), false);
+    assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 11), true);
+    assert.equal(BackupTools.shouldRetrySpotifyPostStatus(429, 12), false);
     assert.equal(BackupTools.shouldRetrySpotifyPostStatus(503, 0), false);
 });
 

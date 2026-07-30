@@ -44,6 +44,15 @@
         return Number.isFinite(total) ? total : null;
     }
 
+    function spotifyStoppedMessage(label, error) {
+        if (error && error.reason === 'QUOTA_EXCEEDED') {
+            return 'Spotify paused the developer quota while loading ' + label
+                + '. No progress was deleted.';
+        }
+        return 'Spotify stopped while loading ' + label
+            + (error && error.status ? ' (HTTP ' + error.status + ')' : '') + '.';
+    }
+
     function assessLikedSongsLoad(summary) {
         const hasExpectedTotal = summary.expectedTotal !== null
             && summary.expectedTotal !== undefined
@@ -55,8 +64,7 @@
         let message = '';
 
         if (summary.error) {
-            message = 'Spotify stopped while loading Liked Songs'
-                + (summary.error.status ? ' (HTTP ' + summary.error.status + ')' : '') + '.';
+            message = spotifyStoppedMessage('Liked Songs', summary.error);
         } else if (!Number.isFinite(expectedTotal)) {
             message = 'Spotify did not report the total number of Liked Songs.';
         } else if (receivedItems !== expectedTotal) {
@@ -82,8 +90,7 @@
         let message = '';
 
         if (summary.error) {
-            message = 'Spotify stopped while loading ' + label
-                + (summary.error.status ? ' (HTTP ' + summary.error.status + ')' : '') + '.';
+            message = spotifyStoppedMessage(label, summary.error);
         } else if (expectedTotal === null) {
             message = 'Spotify did not report the total number of ' + label + '.';
         } else if (receivedItems !== expectedTotal) {
@@ -123,8 +130,7 @@
         let message = '';
 
         if (summary.error) {
-            message = 'Spotify stopped while loading playlists'
-                + (summary.error.status ? ' (HTTP ' + summary.error.status + ')' : '') + '.';
+            message = spotifyStoppedMessage('playlists', summary.error);
         } else if (!Number.isFinite(expectedPlaylists)) {
             message = 'Spotify did not report the total number of playlists.';
         } else if (receivedPlaylists !== expectedPlaylists) {
@@ -401,13 +407,46 @@
         return { valid: true, verified: true, likedSongCount, message: '' };
     }
 
-    function shouldRetrySpotifyStatus(status, attempts) {
-        if (status === 429) return attempts < 8;
+    function spotifyErrorReason(responseJSON) {
+        const error = responseJSON && responseJSON.error;
+        return error && typeof error === 'object' && typeof error.reason === 'string'
+            ? error.reason
+            : '';
+    }
+
+    function spotifyRetryDelayMs(options) {
+        const status = Number(options && options.status);
+        const reason = options && options.reason ? options.reason : '';
+        const rawRetryAfter = options && options.retryAfterSeconds;
+        const retryAfter = rawRetryAfter === null
+            || rawRetryAfter === undefined
+            || rawRetryAfter === ''
+            ? NaN
+            : Number(rawRetryAfter);
+        const attempts = Number(options && options.attempts || 0);
+        const defaultDelay = Number(options && options.defaultDelayMs || 100);
+
+        if (status !== 429) return defaultDelay;
+        if (Number.isFinite(retryAfter) && retryAfter >= 0) {
+            return (retryAfter + 1) * 1000;
+        }
+        if (reason === 'QUOTA_EXCEEDED') return 30 * 60 * 1000;
+
+        // Spotify uses a rolling 30-second window. Never retry inside the same
+        // window when browsers cannot expose Retry-After.
+        return Math.min(45_000 * Math.pow(2, Math.floor(attempts / 3)), 5 * 60 * 1000);
+    }
+
+    function shouldRetrySpotifyStatus(status, attempts, reason) {
+        if (status === 429) {
+            return attempts < (reason === 'QUOTA_EXCEEDED' ? 48 : 12);
+        }
         return attempts < 3 && status >= 500;
     }
 
-    function shouldRetrySpotifyPostStatus(status, attempts) {
-        return attempts < 8 && status === 429;
+    function shouldRetrySpotifyPostStatus(status, attempts, reason) {
+        if (status !== 429) return false;
+        return attempts < (reason === 'QUOTA_EXCEEDED' ? 48 : 12);
     }
 
     function queuePlaylistTrack(queue, playlistId, uri) {
@@ -437,6 +476,8 @@
         queuePlaylistTrack,
         reportedSpotifyTotal,
         savedTrackFromSpotify,
+        spotifyErrorReason,
+        spotifyRetryDelayMs,
         shouldRetrySpotifyPostStatus,
         shouldRetrySpotifyStatus,
         validateImportSnapshot,

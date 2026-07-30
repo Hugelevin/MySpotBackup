@@ -29,8 +29,8 @@ Before the first login, create a Spotify developer app:
 8. Select **Login with Spotify**.
 
 The Client ID is public application metadata. MySpotBackup stores it locally in
-your browser. The temporary access token is kept only in that browser tab's
-session storage.
+your browser. Login tokens are kept only in that browser tab's session storage
+and are renewed automatically during a long Spotify quota wait.
 
 Spotify requires the redirect URI to match exactly, including capitalization,
 path, and trailing characters.
@@ -38,13 +38,14 @@ path, and trailing characters.
 ## Back up and restore
 
 1. Log in to the source Spotify account.
-2. Select **Export** and save the JSON backup.
+2. Select **Back up this account** and save the JSON backup.
 3. Select **Switch account**. On Spotify's authorization page, choose the
    destination account; if Spotify still shows the source account, use its
    **Not you?** or sign-out option first.
 4. Confirm that MySpotBackup displays the destination account as the import
    target.
-5. Select **Import**, choose the JSON backup, and confirm the target again.
+5. Select **Restore a backup**, choose the JSON backup, and confirm the target
+   again.
 
 The restore sends Liked Songs from oldest to newest, requests the original
 `added_at` timestamps, and reloads the destination library afterward. The
@@ -106,11 +107,27 @@ the developer app owner has Spotify Premium.
 
 ### Spotify returns `429`
 
-Spotify is temporarily rate limiting the app. MySpotBackup waits for Spotify's
-`Retry-After` period and retries automatically. If library verification still
-stops, **Choose backup file** remains available so you can inspect and select
-the JSON; the app will verify the destination account again before it writes
-anything. Export stays disabled until the source library is completely loaded.
+Spotify has two different `429` responses:
+
+- A rolling rate limit normally clears after the `Retry-After` period.
+- `QUOTA_EXCEEDED` is a Development Mode quota pause. Since July 2026, Spotify
+  counts this quota across every Client ID owned by the same developer account,
+  so creating another app under that account does not reset it.
+
+MySpotBackup identifies both cases, shows a plain-language countdown, renews
+the Spotify login when necessary, and continues automatically. Keep the tab
+open. The app deliberately loads nothing until you choose **Back up** or
+**Restore**, spaces requests out, and only loads the destination information
+needed for a safe restore. Spotify controls when its quota becomes available;
+the app cannot bypass that limit.
+
+If backup verification ultimately stops, **Choose backup now** remains
+available so you can select the JSON. The app will verify the destination
+account before writing anything. A source backup stays disabled until every
+required Spotify page is verified, preventing an incomplete backup.
+
+See Spotify's [rate-limit guide](https://developer.spotify.com/documentation/web-api/concepts/rate-limits)
+and [July 2026 quota update](https://developer.spotify.com/blog/2026-07-23-web-api-quota-updates).
 
 ## Development and deployment
 

@@ -6,10 +6,12 @@ const test = require('node:test');
 const html = readFileSync(join(__dirname, '..', 'public', 'index.html'), 'utf8');
 
 test('a Spotify profile failure after OAuth is shown instead of leaving the page idle', () => {
+    const handleAuth = html.slice(
+        html.indexOf('function handleAuth('),
+        html.indexOf('function refreshMyMusicTracks('),
+    );
     assert.match(html, /id="authError"/);
     assert.match(html, /function showAuthError\(/);
-    assert.match(
-        html,
-        /error:\s*function\s*\([^)]*\)\s*\{\s*showAuthError\(/,
-    );
+    assert.match(handleAuth, /error:\s*function\s*\(jqXHR\)/);
+    assert.match(handleAuth, /showAuthError\(jqXHR\)/);
 });

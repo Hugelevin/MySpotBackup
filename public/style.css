@@ -187,6 +187,7 @@ body {
 .client-id-heading a {
   color: var(--accent);
   text-underline-offset: 3px;
+  white-space: nowrap;
 }
 
 .client-id-row {
@@ -337,6 +338,13 @@ body {
   color: #ffb3b3;
   background: rgba(255,107,107,0.1);
   border-color: rgba(255,107,107,0.35);
+  animation: none;
+}
+
+.status-msg.status-waiting {
+  color: #d9e8ff;
+  background: rgba(84, 145, 255, 0.1);
+  border-color: rgba(84, 145, 255, 0.35);
   animation: none;
 }
 
@@ -602,5 +610,7 @@ body {
   .completion-actions { grid-template-columns: 1fr; flex-direction: column; }
   .client-id-row { flex-direction: column; }
   .client-id-tools .btn { width: 100%; }
+  .client-id-status-row { align-items: flex-start; flex-direction: column; gap: 5px; }
+  .client-id-status-row .text-button { white-space: nowrap; }
   .account-header { align-items: flex-start; }
 }
