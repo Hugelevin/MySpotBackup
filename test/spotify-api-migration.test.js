@@ -275,3 +275,66 @@ test('a cancelled or replaced restore cannot be resumed by a stale retry', () =>
     assert.match(confirmedImport, /var selectedImport = importColl/);
     assert.match(confirmedImport, /importColl !== selectedImport/);
 });
+
+test('playlist transfers use maximum read pages and 100-item write bodies', () => {
+    const playlistDiscovery = html.slice(
+        html.indexOf('function loadPlaylistChunks('),
+        html.indexOf('function handlePlaylistTracks('),
+    );
+    const playlistWrites = html.slice(
+        html.indexOf('function handlePlaylistRequests('),
+        html.indexOf('function uriInTracks('),
+    );
+
+    assert.match(playlistDiscovery, /withSpotifyPageLimit\(href, 50\)/);
+    assert.match(html, /createPlaylistRestoreBatches\(playlistQueue\)/);
+    assert.match(playlistWrites, /JSON\.stringify\(\{uris: request\.uris\}\)/);
+    assert.doesNotMatch(playlistWrites, /items\?uris=/);
+});
+
+test('delete and import progress use bounded counters with accurate labels', () => {
+    const progress = html.slice(
+        html.indexOf('function refreshProgress('),
+        html.indexOf('function currentClientId('),
+    );
+    const wipe = html.slice(
+        html.indexOf('function wipeAccount('),
+        html.indexOf('function handleAuth('),
+    );
+    const playlistCount = html.slice(
+        html.indexOf('function collPlaylistCount('),
+        html.indexOf('function compareEverything('),
+    );
+    const trackUpload = html.slice(
+        html.indexOf('function handleTrackUpload('),
+        html.indexOf('function verifyRestoredLikedSongs('),
+    );
+    const followedPlaylists = html.slice(
+        html.indexOf('function handleFollowRequests('),
+        html.indexOf('function handleArtistFollowRequests('),
+    );
+    const followedArtists = html.slice(
+        html.indexOf('function handleArtistFollowRequests('),
+        html.indexOf('function handlePlaylistCompare('),
+    );
+    const savedLibrary = html.slice(
+        html.indexOf('function handleLibrarySaveRequests('),
+        html.indexOf('function refreshFollowedArtists('),
+    );
+
+    assert.match(progress, /MySpotBackup\.progressSnapshot/);
+    assert.match(html, /id="progressTitle"/);
+    assert.match(html, /id="playlistProgressLabel"/);
+    assert.match(html, /id="trackProgressLabel"/);
+    assert.match(wipe, /playlistStep \+= 1/);
+    assert.match(wipe, /trackStep \+= batch\.length/);
+    assert.doesNotMatch(wipe, /totalItems \+= 10/);
+    assert.match(playlistCount, /keys\.length \+ 1/);
+    assert.doesNotMatch(playlistCount, /keys\.length \+ 1[\s\S]*count\+\+/);
+    assert.doesNotMatch(trackUpload, /playlistTotal \+= extraOps/);
+    assert.match(trackUpload, /otherLibraryItems/);
+    assert.match(followedPlaylists, /playlistStep \+= batch\.length/);
+    assert.doesNotMatch(followedPlaylists, /trackStep \+= batch\.length/);
+    assert.match(followedArtists, /trackStep \+= batch\.length/);
+    assert.match(savedLibrary, /trackStep \+= batch\.length/);
+});

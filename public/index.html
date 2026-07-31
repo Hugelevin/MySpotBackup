@@ -9,6 +9,7 @@
     <script src="config.js"></script>
     <script src="oauth.js"></script>
     <script src="backup.js"></script>
+    <script src="checkpoint.js"></script>
     <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/underscore.js/1.13.6/underscore-min.js"></script>
 </head>
@@ -101,27 +102,27 @@
         <!-- Action Panel -->
         <div id="pnlAction" class="card actions hidden">
             <div class="action-grid">
-                <div id="btnExport" class="action-card action-export">
+                <button id="btnExport" class="action-card action-export" type="button">
                     <div class="icon">
                         <svg viewBox="0 0 24 24"><path d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
                     </div>
                     <div class="action-title">Back up this account</div>
                     <div class="action-desc">Save everything to one file</div>
-                </div>
-                <div id="btnImport" class="action-card action-import">
+                </button>
+                <button id="btnImport" class="action-card action-import" type="button">
                     <div class="icon">
                         <svg viewBox="0 0 24 24"><path d="M9 16h6v-6h4l-7-7-7 7h4v6zm-4 2h14v2H5v-2z"/></svg>
                     </div>
                     <div class="action-title">Restore a backup</div>
                     <div class="action-desc">Add a backup to this account</div>
-                </div>
-                <div id="btnWipe" class="action-card action-wipe">
+                </button>
+                <button id="btnWipe" class="action-card action-wipe" type="button">
                     <div class="icon">
                         <svg viewBox="0 0 24 24"><path d="M6 19c0 1.1.9 2 2 2h8c1.1 0 2-.9 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
                     </div>
                     <div class="action-title">Erase this account</div>
                     <div class="action-desc">Advanced: remove everything</div>
-                </div>
+                </button>
             </div>
             <div id="backupAssurance" class="backup-assurance hidden">
                 <strong><span id="readyLikedSongs">0</span> Liked Songs and <span id="readyPlaylists">0</span> playlists verified for export.</strong>
@@ -137,7 +138,8 @@
         <div id="pnlImport" class="card import-section hidden">
             <div id="pnlFile">
                 <div class="file-upload-area">
-                    <input type="file" id="fileImport"/>
+                    <input type="file" id="fileImport" accept=".json,application/json"
+                           aria-label="Choose a MySpotBackup JSON file"/>
                     <div class="upload-icon">
                         <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-2 .9-2 2v16c0 1.1.9 2 2 2h12c1.1 0 2-.9 2-2V8l-6-6zm4 18H6V4h7v5h5v11z"/></svg>
                     </div>
@@ -163,6 +165,7 @@
                     <strong id="importTargetName"></strong>
                     <small>Only this currently connected Spotify account will be changed.</small>
                     <small id="importReadiness">The destination library will be verified before anything is changed.</small>
+                    <small id="transferEstimate"></small>
                 </div>
                 <div class="button-row">
                     <button id="btnStartImport" class="btn btn-primary" type="button">Import into this account</button>
@@ -174,20 +177,22 @@
         <!-- Upload / Progress Panel -->
         <div id="pnlUpload" class="card progress-section hidden">
             <div class="progress-header">
-                <div class="progress-title">Importing</div>
+                <div class="progress-title" id="progressTitle">Restoring backup</div>
                 <div class="progress-pct" id="progressPct">0%</div>
             </div>
-            <div class="progress-bar-wrap">
+            <div class="progress-bar-wrap" id="progressMeter" role="progressbar"
+                 aria-label="Operation progress" aria-valuemin="0" aria-valuemax="100"
+                 aria-valuenow="0">
                 <div id="progressBar" class="progress-bar-fill"></div>
             </div>
             <div class="progress-stats">
                 <div class="progress-stat">
                     <div class="val"><span id="playlistStep">0</span>/<span id="playlistTotal">0</span></div>
-                    <div class="lbl">Playlists</div>
+                    <div class="lbl" id="playlistProgressLabel">Playlists</div>
                 </div>
                 <div class="progress-stat">
                     <div class="val"><span id="trackStep">0</span>/<span id="trackTotal">0</span></div>
-                    <div class="lbl">Tracks</div>
+                    <div class="lbl" id="trackProgressLabel">Songs</div>
                 </div>
             </div>
             <div id="globalStep" class="progress-status"></div>
@@ -369,7 +374,10 @@
             $('#btnRetryLoad, #btnImportWhileWaiting').addClass('hidden');
             $('#loadingTitle').removeClass('status-error status-waiting');
             $('#loadingLikedSongs').text('--');
-            setLibraryMessage('Step 1 of 3: Reading playlists. Large libraries can take a few minutes.');
+            setLibraryMessage(
+                'Step 1 of 3: Reading playlists. Large libraries can take a few minutes. '
+                + 'Completed unchanged playlists are kept safely in this browser for retrying.'
+            );
             refreshPlaylist(function (playlistsComplete) {
                 setLibraryMessage('Step 2 of 3: Reading Liked Songs.');
                 refreshMyMusicTracks(function (likedSongsComplete) {
@@ -487,18 +495,32 @@
         trackTotal = 0;
     }
 
+    function setProgressMode(mode) {
+        var isWipe = mode === 'wipe';
+        $('#progressTitle').text(isWipe ? 'Erasing account' : 'Restoring backup');
+        $('#playlistProgressLabel').text('Playlists');
+        $('#trackProgressLabel').text(isWipe ? 'Library items' : 'Songs & library items');
+    }
+
     function refreshProgress() {
+        var snapshot = MySpotBackup.progressSnapshot({
+            playlistStep: playlistStep,
+            playlistTotal: playlistTotal,
+            trackStep: trackStep,
+            trackTotal: trackTotal
+        });
+        playlistStep = snapshot.playlistStep;
+        playlistTotal = snapshot.playlistTotal;
+        trackStep = snapshot.trackStep;
+        trackTotal = snapshot.trackTotal;
         $('#globalStep').html(globalStep);
-        $('#playlistStep').html(playlistStep);
-        $('#playlistTotal').html(playlistTotal);
-        $('#trackStep').html(trackStep);
-        $('#trackTotal').html(trackTotal);
-        var progress = 0;
-        if (trackTotal > 0) {
-            progress = Math.floor(((trackStep / trackTotal) * 100));
-        }
-        $('#progressBar').css('width', progress + '%');
-        $('#progressPct').html(progress + '%');
+        $('#playlistStep').html(snapshot.playlistStep);
+        $('#playlistTotal').html(snapshot.playlistTotal);
+        $('#trackStep').html(snapshot.trackStep);
+        $('#trackTotal').html(snapshot.trackTotal);
+        $('#progressBar').css('width', snapshot.percent + '%');
+        $('#progressPct').html(snapshot.percent + '%');
+        $('#progressMeter').attr('aria-valuenow', snapshot.percent);
         if (typeof collections !== 'undefined' && !makingChanges) {
             var set = collectionProperties(collections);
             $('#loadingPlaylists').html(set.playlistCount);
@@ -751,6 +773,13 @@
                     if (!validation.verified) {
                         alert(validation.message + ' The available songs will still be restored.');
                     }
+                    var estimate = MySpotBackup.estimateRestoreRequests(importColl);
+                    $('#transferEstimate').text(
+                        'Estimated maximum: about ' + estimate.total
+                        + ' Spotify write requests before final verification. Playlist songs are sent '
+                        + 'in groups of up to 100. If interrupted, choose this file again; existing songs '
+                        + 'will be skipped safely.'
+                    );
                     $('#pnlFile').addClass('hidden');
                     $('#pnlFileInfo').removeClass('hidden');
                     $('#importTargetName').text(name);
@@ -841,6 +870,7 @@
             $('#pnlImport').addClass('hidden');
             $('#pnlComplete').addClass('hidden');
             $('#pnlUpload').removeClass('hidden');
+            setProgressMode('import');
             compareEverything();
         });
     }
@@ -895,7 +925,6 @@
     function collPlaylistCount(coll) {
         var keys = _.keys(coll.playlists);
         var count = keys.length + 1;
-        if (!("importedStarred" in keys)) count++;
         if (coll.followedPlaylists) count += coll.followedPlaylists.length;
         return count;
     }
@@ -928,7 +957,6 @@
                         importColl.saved || [],
                         collections.saved || []
                     );
-                    playlistStep += 1;
                     // Queue saved albums
                     if (importColl.savedAlbums && importColl.savedAlbums.length > 0) {
                         $.each(importColl.savedAlbums, function (i, a) { librarySaveQueues.albums.push(a.id); });
@@ -1026,14 +1054,13 @@
         var likedSongsToRestore = savedQueue.reduce(function (total, batch) {
             return total + batch.tracks.length;
         }, 0);
-        var trackDiff = likedSongsToRestore + playlistQueue.length;
-        trackTotal = Math.max(collTrackCount(importColl), trackDiff);
-        trackStep = trackTotal - trackDiff;
-        // Include all operations in playlistTotal so counter doesn't overflow
-        var extraOps = followQueue.length + artistFollowQueue.length
+        var playlistBatches = MySpotBackup.createPlaylistRestoreBatches(playlistQueue);
+        var otherLibraryItems = artistFollowQueue.length
             + librarySaveQueues.albums.length + librarySaveQueues.shows.length
             + librarySaveQueues.episodes.length + librarySaveQueues.audiobooks.length;
-        playlistTotal += extraOps;
+        var trackDiff = likedSongsToRestore + playlistQueue.length + otherLibraryItems;
+        trackTotal = Math.max(collTrackCount(importColl) + otherLibraryItems, trackDiff);
+        trackStep = trackTotal - trackDiff;
         var hasWork = trackTotal > 0 || followQueue.length > 0 || artistFollowQueue.length > 0
             || librarySaveQueues.albums.length > 0 || librarySaveQueues.shows.length > 0
             || librarySaveQueues.episodes.length > 0 || librarySaveQueues.audiobooks.length > 0;
@@ -1057,7 +1084,7 @@
                             + ' songs outside the backup’s Recently Added order.'
                         );
                     }
-                    handlePlaylistRequests(playlistQueue.reverse(), function () {
+                    handlePlaylistRequests(playlistBatches.reverse(), function () {
                         globalStep = "Saving albums";
                         handleLibrarySaveRequests(librarySaveQueues.albums, 'album', function () {
                             globalStep = "Saving shows";
@@ -1178,7 +1205,7 @@
                 url: 'https://api.spotify.com/v1/me/library?uris=' + urisParam,
                 headers: {'Authorization': 'Bearer ' + token}
             }).done(function () {
-                playlistStep += batch.length;
+                trackStep += batch.length;
                 setTimeout(function () {
                     handleArtistFollowRequests(arr, callback);
                 }, conf.slowdown_import);
@@ -1191,7 +1218,7 @@
                     importErrors.push(
                         'Failed to follow ' + batch.length + ' artists (HTTP ' + jqXHR.status + ').'
                     );
-                    playlistStep += batch.length;
+                    trackStep += batch.length;
                     setTimeout(function () {
                         handleArtistFollowRequests(arr, callback);
                     }, conf.slowdown_import);
@@ -1369,12 +1396,12 @@
     function handlePlaylistRequests(arr, callback) {
         var request = arr.pop();
         if (request) {
-            if (request.attempts === 0) trackStep += 1;
+            if (request.attempts === 0) trackStep += request.uris.length;
             var retryDelay = conf.slowdown_import;
             $.ajax({
                 method: "POST",
-                url: 'https://api.spotify.com/v1/playlists/' + request.playlistId
-                    + '/items?uris=' + encodeURIComponent(request.uri),
+                url: 'https://api.spotify.com/v1/playlists/' + request.playlistId + '/items',
+                data: JSON.stringify({uris: request.uris}),
                 contentType: 'application/json',
                 headers: {'Authorization': 'Bearer ' + token},
                 success: function () {},
@@ -1389,7 +1416,8 @@
                         arr.push(request);
                     } else {
                         importErrors.push(
-                            'Failed to add a song to a merged playlist (HTTP ' + jqXHR.status + ').'
+                            'Failed to add a song to a merged playlist batch containing '
+                            + request.uris.length + ' songs (HTTP ' + jqXHR.status + ').'
                         );
                     }
                 }
@@ -1462,18 +1490,16 @@
         makingChanges = true;
         resetCounter();
         importErrors = [];
+        setProgressMode('wipe');
 
-        // Calculate total items for progress tracking
-        var totalItems = 0;
-        totalItems += Math.ceil((collections.saved ? collections.saved.length : 0) / 40);
-        totalItems += Math.ceil((collections.savedAlbums ? collections.savedAlbums.length : 0) / 40);
-        totalItems += Math.ceil((collections.savedShows ? collections.savedShows.length : 0) / 40);
-        totalItems += Math.ceil((collections.savedEpisodes ? collections.savedEpisodes.length : 0) / 40);
-        totalItems += Math.ceil((collections.savedAudiobooks ? collections.savedAudiobooks.length : 0) / 40);
-        totalItems += Math.ceil((collections.followedArtists ? collections.followedArtists.length : 0) / 40);
-        totalItems += 10; // estimate for playlists (loaded dynamically)
-        trackTotal = totalItems;
-        playlistTotal = totalItems;
+        trackTotal = (collections.saved || []).length
+            + (collections.savedAlbums || []).length
+            + (collections.savedShows || []).length
+            + (collections.savedEpisodes || []).length
+            + (collections.savedAudiobooks || []).length
+            + (collections.followedArtists || []).length;
+        playlistTotal = Object.keys(collections.playlists || {}).length
+            + (collections.followedPlaylists || []).length;
 
         globalStep = "Wiping account...";
         $('#pnlAction').addClass('hidden');
@@ -1584,7 +1610,7 @@
             return i.uri || ('spotify:' + type + ':' + i.id);
         });
         var urisParam = uris.map(function (u) { return encodeURIComponent(u); }).join(',');
-        trackStep += 1;
+        trackStep += batch.length;
         console.log('Removing ' + batch.length + ' ' + type + 's from library');
         wipeDeleteRequest(
             'https://api.spotify.com/v1/me/library?uris=' + urisParam,
@@ -1602,7 +1628,7 @@
         var batch = artists.splice(0, 40);
         var uris = batch.map(function (a) { return a.uri || ('spotify:artist:' + a.id); });
         var urisParam = uris.map(function (u) { return encodeURIComponent(u); }).join(',');
-        trackStep += 1;
+        trackStep += batch.length;
         console.log('Unfollowing ' + batch.length + ' artists via library');
         wipeDeleteRequest(
             'https://api.spotify.com/v1/me/library?uris=' + urisParam,
@@ -1621,6 +1647,7 @@
             'https://api.spotify.com/v1/me/playlists?limit=50',
             allPlaylists,
             function () {
+                playlistTotal = Math.max(playlistStep, allPlaylists.length);
                 wipePlaylistBatch(allPlaylists, callback);
             }
         );
@@ -1664,7 +1691,7 @@
     function wipePlaylistBatch(playlists, callback) {
         var pl = playlists.pop();
         if (!pl) { callback(); return; }
-        trackStep += 1;
+        playlistStep += 1;
         // Removing a playlist URI unfollows it; owned playlists are removed as well.
         var action = pl.owned ? 'Deleting' : 'Unfollowing';
         console.log(action + ' playlist:', pl.name);
@@ -1944,7 +1971,7 @@
             headers: {'Authorization': 'Bearer ' + token}
         }).done(function () {
             console.log('Saved ' + entityType + ' batch to library');
-            playlistStep += batch.length;
+            trackStep += batch.length;
             setTimeout(function () {
                 handleLibrarySaveRequests(arr, entityType, callback);
             }, conf.slowdown_import);
@@ -1960,7 +1987,7 @@
                 'Could not restore ' + batch.length + ' ' + entityType
                 + ' item(s) (HTTP ' + (jqXHR.status || 'unknown') + ').'
             );
-            playlistStep += batch.length;
+            trackStep += batch.length;
             setTimeout(function () {
                 handleLibrarySaveRequests(arr, entityType, callback);
             }, conf.slowdown_import);
@@ -2159,6 +2186,7 @@
                         // Feb 2026: 'tracks' renamed to 'items' in playlist objects
                         var tracksRef = value.items || value.tracks;
                         var href = tracksRef ? tracksRef.href : ('https://api.spotify.com/v1/playlists/' + value.id + '/items');
+                        href = MySpotBackup.withSpotifyPageLimit(href, 50);
                         var expectedTrackItems = tracksRef
                             ? MySpotBackup.reportedSpotifyTotal(tracksRef.total)
                             : null;
@@ -2174,6 +2202,7 @@
                             collaborative: metadata.collaborative,
                             href: href,
                             id: metadata.id,
+                            snapshotId: value.snapshot_id || '',
                             expectedTrackItems: expectedTrackItems,
                             tracks: []
                         });
@@ -2210,7 +2239,8 @@
             skipped: 0,
             error: null
         };
-        loadTrackChunks(item.href, item.tracks, trackSummary, function () {
+
+        var finishPlaylist = function () {
             if (item.expectedTrackItems === null && trackSummary.expectedTotal !== null) {
                 summary.expectedTrackItems += trackSummary.expectedTotal;
                 summary.missingTrackTotals -= 1;
@@ -2224,7 +2254,46 @@
             result[MySpotBackup.playlistStorageKey(item, result)] = item;
             if (arr.length == 0) callback();
             else handlePlaylistTracks(arr, result, summary, callback);
-        });
+        };
+
+        var loadFromSpotify = function () {
+            loadTrackChunks(item.href, item.tracks, trackSummary, function () {
+                var exactTotal = MySpotBackup.reportedSpotifyTotal(trackSummary.expectedTotal);
+                if (!trackSummary.error && exactTotal !== null
+                    && trackSummary.receivedItems === exactTotal) {
+                    MySpotCheckpoint.putPlaylist({
+                        accountId: userId,
+                        playlistId: item.id,
+                        snapshotId: item.snapshotId,
+                        expectedTotal: exactTotal,
+                        receivedItems: trackSummary.receivedItems,
+                        restorableItems: trackSummary.restorableItems,
+                        skipped: trackSummary.skipped,
+                        tracks: item.tracks
+                    });
+                }
+                finishPlaylist();
+            });
+        };
+
+        MySpotCheckpoint.getPlaylist(
+            userId,
+            item.id,
+            item.snapshotId,
+            item.expectedTrackItems
+        ).then(function (cached) {
+            if (!cached) {
+                loadFromSpotify();
+                return;
+            }
+            item.tracks = cached.tracks;
+            trackSummary.expectedTotal = cached.expectedTotal;
+            trackSummary.receivedItems = cached.receivedItems;
+            trackSummary.restorableItems = cached.restorableItems;
+            trackSummary.skipped = cached.skipped;
+            globalStep = 'Reusing locally verified playlist: ' + item.name;
+            finishPlaylist();
+        }).catch(loadFromSpotify);
     }
 
     window.onload = function () {
