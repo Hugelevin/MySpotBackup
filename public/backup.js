@@ -459,6 +459,96 @@
         return true;
     }
 
+    function nonNegativeInteger(value) {
+        const number = Number(value);
+        if (!Number.isFinite(number) || number <= 0) return 0;
+        return Math.floor(number);
+    }
+
+    function progressSnapshot(state) {
+        const playlistStep = nonNegativeInteger(state && state.playlistStep);
+        const trackStep = nonNegativeInteger(state && state.trackStep);
+        const playlistTotal = Math.max(
+            playlistStep,
+            nonNegativeInteger(state && state.playlistTotal),
+        );
+        const trackTotal = Math.max(
+            trackStep,
+            nonNegativeInteger(state && state.trackTotal),
+        );
+        const completed = playlistStep + trackStep;
+        const total = playlistTotal + trackTotal;
+        const percent = total > 0
+            ? Math.max(0, Math.min(100, Math.floor((completed / total) * 100)))
+            : 0;
+
+        return {playlistStep, playlistTotal, trackStep, trackTotal, percent};
+    }
+
+    function createPlaylistRestoreBatches(requests, maximumSize) {
+        const size = Math.max(1, Math.min(100, nonNegativeInteger(maximumSize) || 100));
+        const groups = new Map();
+        (requests || []).forEach(function (request) {
+            if (!request || !request.playlistId || !request.uri) return;
+            if (!groups.has(request.playlistId)) groups.set(request.playlistId, []);
+            groups.get(request.playlistId).push(request.uri);
+        });
+
+        const batches = [];
+        groups.forEach(function (uris, playlistId) {
+            chunk(uris, size).forEach(function (uriBatch) {
+                batches.push({playlistId, uris: uriBatch, attempts: 0});
+            });
+        });
+        return batches;
+    }
+
+    function withSpotifyPageLimit(url, limit) {
+        if (!url) return url;
+        const pageUrl = new URL(url);
+        pageUrl.searchParams.set('limit', String(nonNegativeInteger(limit) || 50));
+        return pageUrl.toString();
+    }
+
+    function restorablePlaylistTrackCount(playlist) {
+        return (playlist && Array.isArray(playlist.tracks) ? playlist.tracks : [])
+            .filter(function (track) {
+                return track && track.uri && track.uri.indexOf('spotify:local:') !== 0;
+            }).length;
+    }
+
+    function estimateRestoreRequests(snapshot) {
+        const playlists = Object.values(snapshot && snapshot.playlists || {});
+        const playlistCreates = playlists.length;
+        const playlistItemWrites = playlists.reduce(function (total, playlist) {
+            return total + Math.ceil(restorablePlaylistTrackCount(playlist) / 100);
+        }, 0);
+        const likedSongWrites = Math.ceil(
+            (Array.isArray(snapshot && snapshot.saved) ? snapshot.saved.length : 0) / 40,
+        );
+        const libraryWrites = [
+            'savedAlbums',
+            'savedShows',
+            'savedEpisodes',
+            'savedAudiobooks',
+            'followedPlaylists',
+            'followedArtists',
+        ].reduce(function (total, property) {
+            return total + Math.ceil(
+                (Array.isArray(snapshot && snapshot[property])
+                    ? snapshot[property].length
+                    : 0) / 40,
+            );
+        }, 0);
+        return {
+            playlistCreates,
+            playlistItemWrites,
+            likedSongWrites,
+            libraryWrites,
+            total: playlistCreates + playlistItemWrites + likedSongWrites + libraryWrites,
+        };
+    }
+
     return {
         assessLikedSongsRestore,
         assessLikedSongsLoad,
@@ -466,13 +556,16 @@
         assessSupplementalLibraryLoad,
         createLikedSongRestoreBatches,
         createLikedSongVerificationBatches,
+        createPlaylistRestoreBatches,
         createExportSnapshot,
+        estimateRestoreRequests,
         findPlaylistByName,
         missingPlaylistTrackUris,
         normalizeSavedTrackRecord,
         playlistStorageKey,
         playlistItemFromSpotify,
         playlistMetadataFromSpotify,
+        progressSnapshot,
         queuePlaylistTrack,
         reportedSpotifyTotal,
         savedTrackFromSpotify,
@@ -481,5 +574,6 @@
         shouldRetrySpotifyPostStatus,
         shouldRetrySpotifyStatus,
         validateImportSnapshot,
+        withSpotifyPageLimit,
     };
 });

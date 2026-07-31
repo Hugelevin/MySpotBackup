@@ -325,7 +325,13 @@ body {
   text-align: center;
 }
 
-.stat-value { font-size: 28px; font-weight: 800; color: var(--accent); }
+.stat-value {
+  font-size: clamp(20px, 5vw, 28px);
+  font-weight: 800;
+  color: var(--accent);
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
 .stat-label { font-size: 12px; color: var(--text-muted); margin-top: 2px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.5px; }
 
 .status-msg {
@@ -390,10 +396,12 @@ body {
 .action-card {
   padding: 24px 16px; border-radius: var(--radius-sm); text-align: center;
   background: rgba(255,255,255,0.03); border: 1px solid var(--glass-border);
+  color: inherit; font: inherit; width: 100%;
   cursor: pointer; transition: var(--transition);
 }
 
-.action-card:hover {
+.action-card:hover,
+.action-card:focus-visible {
   background: rgba(255,255,255,0.06); border-color: rgba(255,255,255,0.12);
   transform: translateY(-2px);
 }
@@ -481,6 +489,12 @@ body {
 
 .import-target small.status-error { color: #ffb3b3; }
 
+#transferEstimate {
+  margin-top: 5px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(99,60,255,0.18);
+}
+
 .button-row,
 .completion-actions {
   display: grid;
@@ -522,7 +536,12 @@ body {
   text-align: center;
 }
 
-.progress-stat .val { font-size: 16px; font-weight: 700; }
+.progress-stat .val {
+  font-size: clamp(14px, 4vw, 16px);
+  font-weight: 700;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
 .progress-stat .lbl { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 2px; }
 
 .progress-status {
@@ -613,4 +632,29 @@ body {
   .client-id-status-row { align-items: flex-start; flex-direction: column; gap: 5px; }
   .client-id-status-row .text-button { white-space: nowrap; }
   .account-header { align-items: flex-start; }
+  .action-grid { grid-template-columns: 1fr; }
+  .action-card {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    grid-template-rows: auto auto;
+    column-gap: 14px;
+    padding: 16px;
+    text-align: left;
+  }
+  .action-card .icon {
+    grid-row: 1 / span 2;
+    margin: 0;
+  }
+  .action-card .action-title { align-self: end; }
+  .action-card .action-desc { align-self: start; }
+  #btnSwitchAccount { white-space: nowrap; }
+  .progress-stats { gap: 8px; }
+  .progress-stat { min-width: 0; padding-inline: 8px; }
+}
+
+@media (max-width: 420px) {
+  .account-header { align-items: stretch; flex-direction: column; }
+  #btnSwitchAccount { align-self: flex-start; }
+  .stats { gap: 8px; }
+  .stat-card { min-width: 0; padding: 12px 6px; }
 }

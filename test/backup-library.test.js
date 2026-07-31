@@ -539,3 +539,94 @@ test('playlist merge queues each missing song once across same-name source playl
         { playlistId: 'playlist-2', uri: 'spotify:track:new', attempts: 0 },
     ]);
 });
+
+test('progress never exceeds its totals or 100 percent', () => {
+    assert.deepEqual(
+        BackupTools.progressSnapshot({
+            playlistStep: 0,
+            playlistTotal: 10,
+            trackStep: 48,
+            trackTotal: 10,
+        }),
+        {
+            playlistStep: 0,
+            playlistTotal: 10,
+            trackStep: 48,
+            trackTotal: 48,
+            percent: 82,
+        },
+    );
+    assert.equal(
+        BackupTools.progressSnapshot({
+            playlistStep: 90,
+            playlistTotal: 109,
+            trackStep: 1529,
+            trackTotal: 13622,
+        }).percent,
+        11,
+    );
+});
+
+test('playlist restores are grouped by playlist in Spotify-sized batches', () => {
+    const requests = [];
+    for (let index = 0; index < 205; index += 1) {
+        requests.push({
+            playlistId: 'playlist-a',
+            uri: `spotify:track:${index}`,
+            attempts: 0,
+        });
+    }
+    requests.push({
+        playlistId: 'playlist-b',
+        uri: 'spotify:track:other',
+        attempts: 0,
+    });
+
+    const batches = BackupTools.createPlaylistRestoreBatches(requests);
+
+    assert.deepEqual(batches.map((batch) => batch.uris.length), [100, 100, 5, 1]);
+    assert.deepEqual(batches.map((batch) => batch.playlistId), [
+        'playlist-a',
+        'playlist-a',
+        'playlist-a',
+        'playlist-b',
+    ]);
+});
+
+test('playlist export URLs request Spotify maximum page size', () => {
+    assert.equal(
+        BackupTools.withSpotifyPageLimit(
+            'https://api.spotify.com/v1/playlists/abc/items',
+            50,
+        ),
+        'https://api.spotify.com/v1/playlists/abc/items?limit=50',
+    );
+    assert.equal(
+        BackupTools.withSpotifyPageLimit(
+            'https://api.spotify.com/v1/playlists/abc/items?market=MT&limit=20',
+            50,
+        ),
+        'https://api.spotify.com/v1/playlists/abc/items?market=MT&limit=50',
+    );
+});
+
+test('restore request estimates reflect 100-item playlist batches', () => {
+    const estimate = BackupTools.estimateRestoreRequests({
+        playlists: {
+            first: {tracks: Array.from({length: 101}, (_, i) => ({uri: `spotify:track:a${i}`}))},
+            second: {tracks: [{uri: 'spotify:track:b'}]},
+        },
+        saved: Array.from({length: 51}, (_, i) => ({uri: `spotify:track:s${i}`})),
+        savedAlbums: [],
+        savedShows: [],
+        savedEpisodes: [],
+        savedAudiobooks: [],
+        followedPlaylists: [],
+        followedArtists: [],
+    });
+
+    assert.equal(estimate.playlistCreates, 2);
+    assert.equal(estimate.playlistItemWrites, 3);
+    assert.equal(estimate.likedSongWrites, 2);
+    assert.ok(estimate.total < 10);
+});
